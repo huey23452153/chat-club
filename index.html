@@ -462,14 +462,14 @@
 
   .help-fab{
     position: fixed; bottom: 18px; left: 18px; z-index: 60;
-    width: 48px; height: 48px; border-radius: 50%;
-    background: var(--teal); color: white; border: none;
-    font-size: 20px; font-weight: 800;
-    box-shadow: 0 8px 20px -6px rgba(20,86,83,0.45);
+    width: 36px; height: 36px; border-radius: 50%;
+    background: var(--surface); color: var(--ink); border: 1px solid var(--line);
+    font-size: 15px; font-weight: 800;
+    box-shadow: 0 6px 16px -6px rgba(0,0,0,0.3);
     display:flex; align-items:center; justify-content:center;
-    transition: transform .12s ease, background .15s ease;
+    transition: transform .12s ease, box-shadow .15s ease;
   }
-  .help-fab:hover{ background: var(--teal-dark); transform: scale(1.08); }
+  .help-fab:hover{ box-shadow: 0 8px 20px -6px rgba(0,0,0,0.4); transform: scale(1.08); }
   .help-fab:active{ transform: scale(0.9); }
   @media (max-width: 780px){
     .help-fab{ bottom: calc(18px + env(safe-area-inset-bottom)); z-index: 70; }
