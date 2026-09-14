@@ -277,7 +277,7 @@
   .msg-sender{ font-size: 12px; font-weight:700; color: var(--ink-soft); margin: 0 4px 3px; }
   .bubble{
     width: fit-content; max-width: 100%;
-    padding: 6px 10px; border-radius: 13px; position: relative;
+    padding: 8px 12px; border-radius: 14px; position: relative;
     font-size: 14px; line-height:1.35; word-wrap:break-word; white-space:pre-wrap;
     transition: transform .1s ease;
   }
@@ -1345,12 +1345,14 @@
             </div>`
           : "";
 
+        const replyQuoteHtml = m.replyTo
+          ? `<div class="reply-quote">↩️ ${escapeHtml(m.replyTo.senderName)}: ${escapeHtml(m.replyTo.text)}</div>`
+          : "";
+        const bubbleInner = replyQuoteHtml + escapeHtml(m.text);
+
         row.innerHTML = `
           ${mine ? "" : `<div class="msg-sender">${escapeHtml(m.senderName || "Friend")}</div>`}
-          <div class="bubble" ${mine ? `data-editable data-id="${m.id}"` : ""}>
-            ${m.replyTo ? `<div class="reply-quote">↩️ ${escapeHtml(m.replyTo.senderName)}: ${escapeHtml(m.replyTo.text)}</div>` : ""}
-            ${escapeHtml(m.text)}
-          </div>
+          <div class="bubble" ${mine ? `data-editable data-id="${m.id}"` : ""}>${bubbleInner}</div>
           <div class="msg-time">${timeStr}${editedTag}</div>
           <div class="reactions-row">
             ${pillsHtml}
