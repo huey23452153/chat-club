@@ -595,6 +595,30 @@
   html[data-theme="glassblue"] body::before{ background: radial-gradient(circle, #00C6FB, transparent 70%); }
   html[data-theme="glassblue"] body::after{ background: radial-gradient(circle, #0575E6, transparent 70%); }
 
+  html[data-theme="glasssunset"] body{
+    background-image: linear-gradient(135deg, #FF9A8B 0%, #FF6A88 35%, #FF99AC 65%, #FF9A8B 100%);
+  }
+  html[data-theme="glasssunset"] body::before{ background: radial-gradient(circle, #FF6A88, transparent 70%); }
+  html[data-theme="glasssunset"] body::after{ background: radial-gradient(circle, #FF9A8B, transparent 70%); }
+
+  html[data-theme="glassforest"] body{
+    background-image: linear-gradient(135deg, #134E5E 0%, #4CA1AF 35%, #71B280 65%, #134E5E 100%);
+  }
+  html[data-theme="glassforest"] body::before{ background: radial-gradient(circle, #71B280, transparent 70%); }
+  html[data-theme="glassforest"] body::after{ background: radial-gradient(circle, #134E5E, transparent 70%); }
+
+  html[data-theme="glassviolet"] body{
+    background-image: linear-gradient(135deg, #C471ED 0%, #7B4397 35%, #C471ED 65%, #F64F59 100%);
+  }
+  html[data-theme="glassviolet"] body::before{ background: radial-gradient(circle, #C471ED, transparent 70%); }
+  html[data-theme="glassviolet"] body::after{ background: radial-gradient(circle, #7B4397, transparent 70%); }
+
+  html[data-theme="glassgold"] body{
+    background-image: linear-gradient(135deg, #F6D365 0%, #FDA085 35%, #F6D365 65%, #FBAB7E 100%);
+  }
+  html[data-theme="glassgold"] body::before{ background: radial-gradient(circle, #FDA085, transparent 70%); }
+  html[data-theme="glassgold"] body::after{ background: radial-gradient(circle, #F6D365, transparent 70%); }
+
   /* ---------- Video call ---------- */
   .incoming-call-banner{
     position: fixed; top: calc(14px + env(safe-area-inset-top)); left:50%; transform: translateX(-50%);
@@ -955,6 +979,22 @@
     { id: "glassdark", name: "Dark Glass",   swatch: "linear-gradient(135deg,#0f2027,#2c5364)", vars: {
         "--bg":"#0f2027", "--surface":"rgba(24,27,32,0.45)", "--ink":"#F2F5F4",
         "--ink-soft":"#B8C4C3", "--line":"rgba(255,255,255,0.15)", "--bubble-them":"rgba(255,255,255,0.12)"
+      } },
+    { id: "glasssunset", name: "Sunset Glass", swatch: "linear-gradient(135deg,#FF9A8B,#FF6A88)", vars: {
+        "--bg":"#FF9A8B", "--surface":"rgba(255,255,255,0.35)",
+        "--line":"rgba(255,255,255,0.5)", "--bubble-them":"rgba(255,255,255,0.4)"
+      } },
+    { id: "glassforest", name: "Forest Glass", swatch: "linear-gradient(135deg,#134E5E,#71B280)", vars: {
+        "--bg":"#134E5E", "--surface":"rgba(255,255,255,0.18)", "--ink":"#F2F7F4",
+        "--ink-soft":"#CBDCD4", "--line":"rgba(255,255,255,0.25)", "--bubble-them":"rgba(255,255,255,0.18)"
+      } },
+    { id: "glassviolet", name: "Violet Glass", swatch: "linear-gradient(135deg,#C471ED,#7B4397)", vars: {
+        "--bg":"#C471ED", "--surface":"rgba(255,255,255,0.3)",
+        "--line":"rgba(255,255,255,0.5)", "--bubble-them":"rgba(255,255,255,0.35)"
+      } },
+    { id: "glassgold", name: "Gold Glass", swatch: "linear-gradient(135deg,#F6D365,#FDA085)", vars: {
+        "--bg":"#F6D365", "--surface":"rgba(255,255,255,0.35)",
+        "--line":"rgba(255,255,255,0.5)", "--bubble-them":"rgba(255,255,255,0.4)"
       } }
   ];
 
@@ -2105,7 +2145,7 @@
       const sw = document.createElement("div");
       sw.className = "swatch" + (current === theme.id ? " selected" : "");
       sw.style.background = theme.swatch;
-      sw.style.color = ["black", "glassdark", "glassblue"].includes(theme.id) ? "#fff" : "#666";
+      sw.style.color = ["black", "glassdark", "glassblue", "glassforest", "glassviolet"].includes(theme.id) ? "#fff" : "#666";
       sw.title = theme.name;
       sw.textContent = current === theme.id ? "✓" : "";
       sw.addEventListener("click", () => {

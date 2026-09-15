@@ -15,8 +15,11 @@ if (require('fs').existsSync(portableJdkHome)) {
 
 module.exports = defineConfig({
   testDir: './tests',
-  fullyParallel: false, // tests share one Firestore/Auth emulator instance
-  workers: 1,
+  // Every test signs up its own uniquely-named account and uses its own
+  // browser context/pages, so tests don't step on each other and can safely
+  // run at the same time against the one shared emulator instance.
+  fullyParallel: true,
+  workers: 4,
   timeout: 30000,
   reporter: [['list']],
   use: {
