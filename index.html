@@ -1820,7 +1820,8 @@
       });
       showCallOverlay("Calling...");
     } catch(err){
-      alert("Couldn't start the call — check that camera/microphone access is allowed.");
+      console.error("Call failed to start:", err);
+      alert(`Couldn't start the call (${err?.name || "error"}: ${err?.message || err}).`);
       cleanupCallState();
     }
   });
@@ -1854,7 +1855,8 @@
       });
       showCallOverlay("Connected");
     } catch(err){
-      alert("Couldn't join the call — check that camera/microphone access is allowed.");
+      console.error("Call failed to join:", err);
+      alert(`Couldn't join the call (${err?.name || "error"}: ${err?.message || err}).`);
       cleanupCallState();
     }
   });
