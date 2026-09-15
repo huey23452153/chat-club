@@ -620,6 +620,7 @@
   .local-video{
     position:absolute; width: 30%; max-width:160px; right:12px; bottom:12px;
     border-radius:12px; border:2px solid rgba(255,255,255,0.6); object-fit:cover; background:#000;
+    transform: scaleX(-1); /* mirror the self-view, like a real mirror — the outgoing stream sent to the other person is unaffected */
   }
   .call-status{ color:white; font-weight:700; margin: 14px 0; font-size:15px; }
   .call-controls{ display:flex; gap:14px; }
@@ -882,11 +883,11 @@
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-app.js";
   import {
     getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword,
-    onAuthStateChanged, signOut, updateProfile
+    onAuthStateChanged, signOut, updateProfile, connectAuthEmulator
   } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-auth.js";
   import {
     getFirestore, doc, setDoc, getDoc, getDocs, collection, addDoc, updateDoc, deleteDoc,
-    query, where, orderBy, onSnapshot, serverTimestamp, arrayUnion, arrayRemove
+    query, where, orderBy, onSnapshot, serverTimestamp, arrayUnion, arrayRemove, connectFirestoreEmulator
   } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
 
   const firebaseConfig = {
@@ -901,6 +902,14 @@
   const app = initializeApp(firebaseConfig);
   const auth = getAuth(app);
   const db = getFirestore(app);
+
+  // Automated tests run this app from localhost against Firebase's local
+  // emulators, so real accounts/messages are never touched. Production
+  // (Render) is served from a different hostname, so this never fires there.
+  if(location.hostname === "localhost" || location.hostname === "127.0.0.1"){
+    connectAuthEmulator(auth, "http://localhost:9099", { disableWarnings: true });
+    connectFirestoreEmulator(db, "localhost", 8080);
+  }
 
   // =========================================================================
   //  SETTINGS
@@ -1145,6 +1154,7 @@
       if(callUnsub) callUnsub();
       hideIncomingBanner();
       endCallLocally();
+      setAuthMode("login"); // reset the form for whoever uses this device next
       showScreen("auth");
     }
   });
