@@ -32,6 +32,28 @@ test("damn, dammit, crap, and crappy are left alone (not censored)", async ({ pa
   await expect(page.locator(".bubble").filter({ hasText: "Damn, dammit, this crap is crappy" })).toBeVisible();
 });
 
+test("leetspeak, stretched letters, and punctuation-split swears still get swapped", async ({ page }) => {
+  await signup(page, uniqueName("Yara"));
+  await createGroup(page, "Fuzzy Filter Chat");
+
+  await page.fill("#messageInput", "sh1t that was fuuuuck1ng a$$");
+  await page.click("#sendBtn");
+
+  await expect(page.locator(".bubble").filter({ hasText: "shoot that was freaking butt" })).toBeVisible();
+});
+
+test("the fuzzy filter doesn't mangle ordinary words or short real sentences", async ({ page }) => {
+  await signup(page, uniqueName("Zane"));
+  await createGroup(page, "False Positive Chat");
+
+  await page.fill("#messageInput", "I have class, and a s soon as possible is fine");
+  await page.click("#sendBtn");
+
+  await expect(page.locator(".bubble").filter({
+    hasText: "I have class, and a s soon as possible is fine"
+  })).toBeVisible();
+});
+
 test("editing your own message updates the bubble text", async ({ page }) => {
   await signup(page, uniqueName("Frank"));
   await createGroup(page, "Edit Chat");

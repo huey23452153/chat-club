@@ -1779,14 +1779,40 @@
     "whore": "meanie", "slut": "meanie",
     "retard": "silly", "retarded": "silly"
   };
+  // Catch common ways people dodge a plain word-list filter: leetspeak
+  // substitutions (@/4 for a, 3 for e, 1/! for i, 0 for o, $/5 for s, 7 for
+  // t), letters stretched out ("fuuuuck"), and punctuation slipped between
+  // letters ("f.u.c.k", "s*h*i*t"). Plain spaces are deliberately NOT
+  // treated as separators, so short words like "ass" can't accidentally
+  // match across an ordinary sentence (e.g. "a s soon as").
+  const LEET_VARIANTS = { a: "a4@", e: "e3", i: "i1!", o: "o0", s: "s5$z", t: "t7", u: "uv" };
+  const FUZZY_SEPARATOR = "[.*_~-]*";
+  function letterPattern(ch){
+    const variants = LEET_VARIANTS[ch];
+    return "[" + (variants || ch) + "]+";
+  }
+  function buildWordPattern(word){
+    return word.split("").map(letterPattern).join(FUZZY_SEPARATOR);
+  }
+  const WORD_SWAP_KEYS = Object.keys(WORD_SWAPS).sort((a, b) => b.length - a.length);
   const WORD_SWAP_REGEX = new RegExp(
-    "\\b(" + Object.keys(WORD_SWAPS).sort((a, b) => b.length - a.length).join("|") + ")\\b",
+    "(?<![a-zA-Z])(?:" +
+      WORD_SWAP_KEYS.map(w => `(?<w_${w}>${buildWordPattern(w)})`).join("|") +
+    ")(?![a-zA-Z])",
     "gi"
   );
   function applyWordSwaps(text){
     if(!text) return text;
-    return text.replace(WORD_SWAP_REGEX, (match) => {
-      const replacement = WORD_SWAPS[match.toLowerCase()];
+    return text.replace(WORD_SWAP_REGEX, (...args) => {
+      const match = args[0];
+      const groups = args[args.length - 1];
+      let word = null;
+      if(groups){
+        for(const key in groups){
+          if(groups[key] !== undefined){ word = key.slice(2); break; }
+        }
+      }
+      const replacement = word && WORD_SWAPS[word];
       if(!replacement) return match;
       if(match === match.toUpperCase()) return replacement.toUpperCase();
       if(match[0] === match[0].toUpperCase()) return replacement[0].toUpperCase() + replacement.slice(1);
