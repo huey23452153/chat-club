@@ -1697,7 +1697,7 @@
       editingMessageId = null;
       if(newText){
         updateDoc(doc(db, "groups", activeGroupId, "messages", id), {
-          text: newText.slice(0, 500),
+          text: applyWordSwaps(newText.slice(0, 500)),
           editedAt: serverTimestamp()
         }).catch(() => {});
       }
@@ -1758,6 +1758,41 @@
     const d = document.createElement("div");
     d.textContent = str ?? "";
     return d.innerHTML;
+  }
+
+  // =========================================================================
+  //  WORD SWAP: replace common swear words with milder versions before a
+  //  message is ever saved, so everyone in the chat only ever sees the
+  //  cleaned-up version.
+  // =========================================================================
+  const WORD_SWAPS = {
+    "fuck": "fudge", "fucks": "fudges", "fucking": "freaking", "fucked": "messed up",
+    "shit": "shoot", "shits": "shoots", "shitty": "crummy", "bullshit": "baloney",
+    "damn": "darn", "goddamn": "goshdarn", "dammit": "dangit",
+    "hell": "heck",
+    "ass": "butt", "asshole": "jerk", "asshat": "jerk",
+    "bitch": "jerk", "bitchy": "grumpy",
+    "bastard": "rascal",
+    "crap": "crud", "crappy": "crummy",
+    "piss": "ticked off", "pissed": "ticked off",
+    "dick": "jerk", "dickhead": "jerk",
+    "douche": "jerk", "douchebag": "jerk",
+    "whore": "meanie", "slut": "meanie",
+    "retard": "silly", "retarded": "silly"
+  };
+  const WORD_SWAP_REGEX = new RegExp(
+    "\\b(" + Object.keys(WORD_SWAPS).sort((a, b) => b.length - a.length).join("|") + ")\\b",
+    "gi"
+  );
+  function applyWordSwaps(text){
+    if(!text) return text;
+    return text.replace(WORD_SWAP_REGEX, (match) => {
+      const replacement = WORD_SWAPS[match.toLowerCase()];
+      if(!replacement) return match;
+      if(match === match.toUpperCase()) return replacement.toUpperCase();
+      if(match[0] === match[0].toUpperCase()) return replacement[0].toUpperCase() + replacement.slice(1);
+      return replacement;
+    });
   }
 
   // =========================================================================
@@ -1896,7 +1931,7 @@
 
     try{
       const payload = {
-        text: text.slice(0, 500),
+        text: applyWordSwaps(text.slice(0, 500)),
         senderId: currentUser.uid,
         senderName: currentUser.displayName,
         createdAt: serverTimestamp()
