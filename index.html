@@ -619,6 +619,12 @@
   html[data-theme="glassgold"] body::before{ background: radial-gradient(circle, #FDA085, transparent 70%); }
   html[data-theme="glassgold"] body::after{ background: radial-gradient(circle, #F6D365, transparent 70%); }
 
+  html[data-theme="glassporsche"] body{
+    background-image: linear-gradient(135deg, #00AEEF 0%, #0072CE 35%, #003153 65%, #00AEEF 100%);
+  }
+  html[data-theme="glassporsche"] body::before{ background: radial-gradient(circle, #00AEEF, transparent 70%); }
+  html[data-theme="glassporsche"] body::after{ background: radial-gradient(circle, #003153, transparent 70%); }
+
   /* ---------- Video call ---------- */
   .incoming-call-banner{
     position: fixed; top: calc(14px + env(safe-area-inset-top)); left:50%; transform: translateX(-50%);
@@ -995,6 +1001,10 @@
     { id: "glassgold", name: "Gold Glass", swatch: "linear-gradient(135deg,#F6D365,#FDA085)", vars: {
         "--bg":"#F6D365", "--surface":"rgba(255,255,255,0.35)",
         "--line":"rgba(255,255,255,0.5)", "--bubble-them":"rgba(255,255,255,0.4)"
+      } },
+    { id: "glassporsche", name: "Porsche Blue Glass", swatch: "linear-gradient(135deg,#00AEEF,#003153)", vars: {
+        "--bg":"#0072CE", "--surface":"rgba(255,255,255,0.22)", "--ink":"#F2FAFF",
+        "--ink-soft":"#C7E6FA", "--line":"rgba(255,255,255,0.3)", "--bubble-them":"rgba(255,255,255,0.2)"
       } }
   ];
 
@@ -2145,7 +2155,7 @@
       const sw = document.createElement("div");
       sw.className = "swatch" + (current === theme.id ? " selected" : "");
       sw.style.background = theme.swatch;
-      sw.style.color = ["black", "glassdark", "glassblue", "glassforest", "glassviolet"].includes(theme.id) ? "#fff" : "#666";
+      sw.style.color = ["black", "glassdark", "glassblue", "glassforest", "glassviolet", "glassporsche"].includes(theme.id) ? "#fff" : "#666";
       sw.title = theme.name;
       sw.textContent = current === theme.id ? "✓" : "";
       sw.addEventListener("click", () => {

@@ -19,7 +19,11 @@ module.exports = defineConfig({
   // browser context/pages, so tests don't step on each other and can safely
   // run at the same time against the one shared emulator instance.
   fullyParallel: true,
-  workers: 4,
+  // 4 workers made a couple of Firestore-listener-timing assertions flaky
+  // under the shared emulator's load; 2 is still a solid speedup over
+  // running serially without adding contention-driven flakes.
+  workers: 2,
+  retries: 1, // absorb rare, genuine timing flakes without masking real bugs
   timeout: 30000,
   reporter: [['list']],
   use: {

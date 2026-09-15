@@ -18,11 +18,16 @@ test("editing your own message updates the bubble text", async ({ page }) => {
   await page.fill("#messageInput", "first draft");
   await page.click("#sendBtn");
   await expect(page.locator(".bubble").filter({ hasText: "first draft" })).toBeVisible();
+  // Firestore fires the optimistic local write and then the server-confirmed
+  // one in quick succession, and the app fully re-renders the message list
+  // each time — wait for that churn to settle before grabbing a bounding box.
+  await page.waitForTimeout(400);
 
   // press-and-hold to edit — use a real mouse down/up (not a synthetic
   // dispatchEvent) so the app's pointerdown/pointerup listeners fire exactly
   // like they would for an actual user
   const bubble = page.locator(".bubble[data-editable]").first();
+  await expect(bubble).toBeVisible();
   const box = await bubble.boundingBox();
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
