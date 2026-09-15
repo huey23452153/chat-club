@@ -409,6 +409,10 @@
     text-align:center; padding: 0 18px 8px; display:none;
   }
   .composer-hint.show{ display:block; animation: list-item-in .2s ease; }
+  .seen-indicator{
+    font-size:11px; color: var(--ink-soft); text-align:right;
+    padding: 2px 20px 0; min-height: 14px;
+  }
   .typing-indicator{
     font-size:12.5px; color: var(--ink-soft); font-style:italic;
     padding: 4px 20px 0; min-height: 18px;
@@ -493,7 +497,13 @@
   .member-chip{
     background: var(--bg); border:1px solid var(--line); border-radius: 999px;
     padding: 5px 10px; font-size:12.5px; font-weight:700; color: var(--ink-soft);
+    display:flex; align-items:center; gap:5px;
   }
+  .member-chip-remove{
+    background:none; border:none; color: var(--ink-soft); font-size:13px;
+    line-height:1; padding:0; margin:0 -2px 0 1px; border-radius:50%;
+  }
+  .member-chip-remove:hover{ color: var(--coral); }
 
   /* ---------- Glass themes (shared blur/border rules for any theme
      whose id starts with "glass" — just add a new body-gradient block
@@ -923,6 +933,7 @@
 
           <div class="messages" id="messagesEl"></div>
 
+          <div class="seen-indicator" id="seenIndicator"></div>
           <div class="typing-indicator" id="typingIndicator"></div>
           <div class="reply-preview" id="replyPreview" style="display:none;">
             <div class="reply-preview-text">
@@ -1065,7 +1076,8 @@
   } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-auth.js";
   import {
     getFirestore, doc, setDoc, getDoc, getDocs, collection, addDoc, updateDoc, deleteDoc,
-    query, where, orderBy, onSnapshot, serverTimestamp, arrayUnion, arrayRemove, connectFirestoreEmulator
+    query, where, orderBy, onSnapshot, serverTimestamp, arrayUnion, arrayRemove, deleteField,
+    connectFirestoreEmulator
   } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
 
   const firebaseConfig = {
@@ -1377,14 +1389,43 @@
   //  GROUPS LIST
   // =========================================================================
   function listenToMyGroups(){
+    let previousGroupIds = null;
     const q = query(collection(db, "groups"), where("memberIds", "array-contains", currentUser.uid));
     groupsUnsub = onSnapshot(q, (snap) => {
       myGroups = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       myGroups.sort((a,b) => (b.updatedAt?.toMillis?.() || 0) - (a.updatedAt?.toMillis?.() || 0));
+      const currentGroupIds = new Set(myGroups.map(g => g.id));
+
+      // Compare against the previous snapshot (skip on the very first load)
+      // to notice groups we've lost access to — whether that's this device
+      // currently viewing that chat or not.
+      if(previousGroupIds){
+        for(const id of previousGroupIds){
+          if(currentGroupIds.has(id)) continue;
+          if(id === activeGroupId){
+            stopTyping();
+            if(messagesUnsub) messagesUnsub();
+            if(typingUnsub) typingUnsub();
+            if(callUnsub) callUnsub();
+            endCallLocally();
+            activeGroupId = null;
+            $("chatView").style.display = "none";
+            $("noChatState").style.display = "flex";
+            $("sidebar").classList.remove("hide-mobile");
+            $("mainPanel").classList.remove("show-mobile");
+          }
+          showToast("Removed from chat", "You're no longer a member of that group.");
+        }
+      }
+      previousGroupIds = currentGroupIds;
+
       renderGroupList();
       if(activeGroupId){
         const stillIn = myGroups.find(g => g.id === activeGroupId);
-        if(stillIn) renderChatHeader(stillIn);
+        if(stillIn){
+          renderChatHeader(stillIn);
+          renderSeenIndicator();
+        }
       }
     });
   }
@@ -1511,6 +1552,7 @@
 
     const g = myGroups.find(g => g.id === groupId);
     if(g) renderChatHeader(g);
+    markGroupRead(groupId);
 
     if(messagesUnsub) messagesUnsub();
     const mq = query(collection(db, "groups", groupId, "messages"), orderBy("createdAt", "asc"));
@@ -1529,6 +1571,7 @@
       seenMessageIds = new Set(msgs.map(m => m.id));
       lastRenderedMessages = msgs;
       renderMessages(msgs);
+      markGroupRead(groupId);
     });
 
     if(typingUnsub) typingUnsub();
@@ -1667,6 +1710,39 @@
       el.appendChild(row);
     });
     if(wasNearBottom || msgs.length <= 1) el.scrollTop = el.scrollHeight;
+    renderSeenIndicator();
+  }
+
+  // =========================================================================
+  //  READ RECEIPTS
+  // =========================================================================
+  async function markGroupRead(groupId){
+    if(!currentUser) return;
+    try{
+      await updateDoc(doc(db, "groups", groupId), {
+        [`lastRead.${currentUser.uid}`]: serverTimestamp()
+      });
+    } catch(e){ /* not a big deal if this occasionally misses */ }
+  }
+
+  function renderSeenIndicator(){
+    const el = $("seenIndicator");
+    if(!el) return;
+    const g = myGroups.find(gr => gr.id === activeGroupId);
+    const lastMsg = lastRenderedMessages[lastRenderedMessages.length - 1];
+    if(!g || !lastMsg || lastMsg.senderId !== currentUser.uid || !lastMsg.createdAt?.toMillis){
+      el.textContent = "";
+      return;
+    }
+    const lastMsgMillis = lastMsg.createdAt.toMillis();
+    const seenNames = Object.entries(g.memberNames || {})
+      .filter(([uid]) => uid !== currentUser.uid)
+      .filter(([uid]) => {
+        const read = g.lastRead && g.lastRead[uid];
+        return read?.toMillis && read.toMillis() >= lastMsgMillis;
+      })
+      .map(([, name]) => name);
+    el.textContent = seenNames.length ? `Seen by ${seenNames.join(", ")}` : "";
   }
 
   function toggleReaction(messageId, emoji){
@@ -1857,10 +1933,23 @@
     const wrap = $("currentMembersList");
     wrap.innerHTML = "";
     if(!g) return;
-    Object.values(g.memberNames || {}).forEach(name => {
+    const isOwner = g.ownerId === currentUser.uid;
+    Object.entries(g.memberNames || {}).forEach(([uid, name]) => {
       const chip = document.createElement("span");
       chip.className = "member-chip";
-      chip.textContent = name;
+      const nameSpan = document.createElement("span");
+      nameSpan.textContent = name;
+      chip.appendChild(nameSpan);
+      // Owners can remove anyone but themselves; leaving the group entirely
+      // isn't supported yet, so we don't offer to remove your own chip.
+      if(isOwner && uid !== currentUser.uid){
+        const removeBtn = document.createElement("button");
+        removeBtn.className = "member-chip-remove";
+        removeBtn.title = `Remove ${name}`;
+        removeBtn.textContent = "✕";
+        removeBtn.addEventListener("click", () => removeMember(uid, name));
+        chip.appendChild(removeBtn);
+      }
       wrap.appendChild(chip);
     });
     Object.entries(g.pendingNames || {}).forEach(([uid, name]) => {
@@ -1870,6 +1959,21 @@
       chip.textContent = name + " (invited)";
       wrap.appendChild(chip);
     });
+  }
+
+  async function removeMember(uid, name){
+    const sure = confirm(`Remove ${name} from this chat?`);
+    if(!sure) return;
+    try{
+      await updateDoc(doc(db, "groups", activeGroupId), {
+        memberIds: arrayRemove(uid),
+        [`memberNames.${uid}`]: deleteField(),
+        updatedAt: serverTimestamp()
+      });
+      renderCurrentMembers();
+    } catch(err){
+      alert("Couldn't remove that person. Please try again.");
+    }
   }
 
   $("confirmAddPersonBtn").addEventListener("click", async () => {

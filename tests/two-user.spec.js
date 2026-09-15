@@ -155,3 +155,67 @@ test("declining a call clears the caller's overlay", async ({ browser }) => {
   await ctxA.close();
   await ctxB.close();
 });
+
+test("an owner can remove a member from the group", async ({ browser }) => {
+  const ctxA = await browser.newContext();
+  const ctxB = await browser.newContext();
+  const pageA = await ctxA.newPage();
+  const pageB = await ctxB.newPage();
+
+  const nameA = uniqueName("Aria");
+  const nameB = uniqueName("Beau");
+
+  await signup(pageA, nameA);
+  await signup(pageB, nameB);
+
+  await createGroup(pageA, "Remove Test Chat");
+  await inviteToGroup(pageA, nameB);
+  await acceptFirstInvite(pageB);
+
+  await expect(pageA.locator("#chatMemberCount")).toHaveText("2 people");
+
+  pageA.on("dialog", (dialog) => dialog.accept());
+  await pageA.click("#addPersonBtn");
+  await pageA.click(`.member-chip-remove[title="Remove ${nameB}"]`);
+
+  // Check the toast first — it auto-dismisses after a few seconds, so it
+  // has to be checked before the other, slower-to-settle assertions below.
+  await expect(pageB.locator(".toast-name", { hasText: "Removed from chat" })).toBeVisible({ timeout: 10000 });
+  await expect(pageA.locator("#chatMemberCount")).toHaveText("1 people", { timeout: 10000 });
+  await expect(pageB.locator(".chat-item-name", { hasText: "Remove Test Chat" })).toHaveCount(0, { timeout: 10000 });
+
+  await ctxA.close();
+  await ctxB.close();
+});
+
+test("the sender sees a 'Seen by' note once the other person reads the message", async ({ browser }) => {
+  const ctxA = await browser.newContext();
+  const ctxB = await browser.newContext();
+  const pageA = await ctxA.newPage();
+  const pageB = await ctxB.newPage();
+
+  const nameA = uniqueName("Cora");
+  const nameB = uniqueName("Drew");
+
+  await signup(pageA, nameA);
+  await signup(pageB, nameB);
+
+  await createGroup(pageA, "Receipts Chat");
+  await inviteToGroup(pageA, nameB);
+  await acceptFirstInvite(pageB);
+
+  await pageA.fill("#messageInput", "did you see this");
+  await pageA.click("#sendBtn");
+  await expect(pageA.locator(".bubble", { hasText: "did you see this" })).toBeVisible();
+
+  // B hasn't opened the chat yet, so there's nothing to show as seen.
+  await expect(pageA.locator("#seenIndicator")).toHaveText("");
+
+  await pageB.locator(".chat-item-name", { hasText: "Receipts Chat" }).click();
+  await pageB.waitForSelector("#chatView", { state: "visible" });
+
+  await expect(pageA.locator("#seenIndicator")).toHaveText(`Seen by ${nameB}`, { timeout: 10000 });
+
+  await ctxA.close();
+  await ctxB.close();
+});
