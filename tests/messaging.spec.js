@@ -15,11 +15,21 @@ test("swear words are swapped for milder ones before sending", async ({ page }) 
   await signup(page, uniqueName("Wendy"));
   await createGroup(page, "Clean Chat");
 
-  await page.fill("#messageInput", "Damn, this is such a crappy ass day");
+  await page.fill("#messageInput", "What an ass move, hell no");
   await page.click("#sendBtn");
 
-  await expect(page.locator(".bubble").filter({ hasText: "Darn, this is such a crummy butt day" })).toBeVisible();
-  await expect(page.locator(".bubble").filter({ hasText: /damn|crappy/i })).toHaveCount(0);
+  await expect(page.locator(".bubble").filter({ hasText: "What an butt move, heck no" })).toBeVisible();
+  await expect(page.locator(".bubble").filter({ hasText: /\bass\b|\bhell\b/i })).toHaveCount(0);
+});
+
+test("damn, dammit, crap, and crappy are left alone (not censored)", async ({ page }) => {
+  await signup(page, uniqueName("Xander"));
+  await createGroup(page, "Uncensored Words Chat");
+
+  await page.fill("#messageInput", "Damn, dammit, this crap is crappy");
+  await page.click("#sendBtn");
+
+  await expect(page.locator(".bubble").filter({ hasText: "Damn, dammit, this crap is crappy" })).toBeVisible();
 });
 
 test("editing your own message updates the bubble text", async ({ page }) => {
