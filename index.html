@@ -632,20 +632,73 @@
   html[data-theme="glassaurora"] body::after{ background: radial-gradient(circle, #7B2FF7, transparent 70%); }
 
   /* Drifting particles: a dark field of small dots that slowly scrolls,
-     instead of the blurred color blobs the other Liquid Glass themes use. */
+     instead of the blurred color blobs the other Liquid Glass themes use.
+     Eight layers with mismatched (non-multiple) tile sizes so the dots
+     don't visibly line up into an obvious repeating grid. */
   html[data-theme="glassparticles"] body{
     background-color: #0B1220;
     background-image:
-      radial-gradient(circle, rgba(255,255,255,0.9) 1px, transparent 1.5px),
-      radial-gradient(circle, rgba(255,255,255,0.55) 1px, transparent 1.5px),
-      radial-gradient(circle, rgba(255,255,255,0.3) 1px, transparent 1.5px);
-    background-size: 140px 140px, 200px 200px, 260px 260px;
-    background-position: 0 0, 50px 70px, 100px 20px;
-    animation: particles-drift 50s linear infinite;
+      radial-gradient(circle, rgba(255,255,255,0.95) 1px, transparent 1.6px),
+      radial-gradient(circle, rgba(255,255,255,0.6) 1px, transparent 1.4px),
+      radial-gradient(circle, rgba(255,255,255,0.35) 1px, transparent 1.3px),
+      radial-gradient(circle, rgba(255,255,255,0.8) 1.4px, transparent 1.8px),
+      radial-gradient(circle, rgba(255,255,255,0.22) 0.8px, transparent 1.2px),
+      radial-gradient(circle, rgba(255,255,255,0.5) 1.1px, transparent 1.5px),
+      radial-gradient(circle, rgba(255,255,255,0.7) 1.6px, transparent 2px),
+      radial-gradient(circle, rgba(255,255,255,0.18) 0.7px, transparent 1.1px);
+    background-size:
+      157px 157px, 211px 271px, 193px 149px, 331px 227px,
+      89px 131px, 121px 173px, 251px 101px, 167px 241px;
+    background-position:
+      0 0, 63px 91px, 140px 33px, 20px 180px,
+      75px 12px, 30px 140px, 160px 60px, 45px 200px;
+    animation: particles-drift 55s linear infinite;
   }
   @keyframes particles-drift{
-    from{ background-position: 0 0, 50px 70px, 100px 20px; }
-    to{ background-position: -280px -280px, -260px -210px, -390px -300px; }
+    from{
+      background-position:
+        0 0, 63px 91px, 140px 33px, 20px 180px,
+        75px 12px, 30px 140px, 160px 60px, 45px 200px;
+    }
+    to{
+      background-position:
+        -314px -314px, -422px -542px, 386px 298px, -662px -454px,
+        -178px -262px, -242px -346px, 502px 202px, -334px -482px;
+    }
+  }
+
+  /* Occasional shooting stars, reusing the two glow-blob pseudo-elements
+     every glass theme has — this theme leaves them plain otherwise. Two
+     independent, long-period streaks offset from each other so, combined,
+     one crosses the sky roughly once a minute rather than constantly. */
+  html[data-theme="glassparticles"] body::before,
+  html[data-theme="glassparticles"] body::after{
+    width: 160px; height: 2px; border-radius: 2px;
+    filter: none; opacity: 0; bottom: auto; right: auto;
+  }
+  html[data-theme="glassparticles"] body::before{
+    top: 15%; left: -15%;
+    background: linear-gradient(90deg, rgba(255,255,255,0.95), rgba(255,255,255,0));
+    animation: shooting-star-1 120s ease-in infinite;
+    animation-delay: 10s;
+  }
+  html[data-theme="glassparticles"] body::after{
+    top: 55%; left: -15%; width: 120px;
+    background: linear-gradient(90deg, rgba(255,255,255,0.9), rgba(255,255,255,0));
+    animation: shooting-star-2 120s ease-in infinite;
+    animation-delay: 70s;
+  }
+  @keyframes shooting-star-1{
+    0%{ opacity:0; transform: translate(0,0) rotate(18deg); }
+    0.8%{ opacity:1; }
+    4%{ opacity:0; transform: translate(130vw, 55vh) rotate(18deg); }
+    100%{ opacity:0; }
+  }
+  @keyframes shooting-star-2{
+    0%{ opacity:0; transform: translate(0,0) rotate(12deg); }
+    0.8%{ opacity:1; }
+    3.5%{ opacity:0; transform: translate(130vw, 40vh) rotate(12deg); }
+    100%{ opacity:0; }
   }
 
   /* Flowing waves: diagonal color bands that scroll past, rather than a
@@ -662,6 +715,63 @@
   }
   html[data-theme="glasswaves"] body::before{ background: radial-gradient(circle, #43E97B, transparent 70%); }
   html[data-theme="glasswaves"] body::after{ background: radial-gradient(circle, #4FACFE, transparent 70%); }
+
+  /* Drifting fireflies: individual glowing dots that travel horizontally
+     across the whole screen, rather than a tiled pattern that scrolls.
+     Each pseudo-element carries a cluster of dots (the classic multi
+     box-shadow trick) and one transform animates the whole cluster along a
+     gently wavy path — one cluster left-to-right, the other right-to-left,
+     at different speeds, so they don't feel synchronized. */
+  html[data-theme="glassfireflies"] body{
+    background-image: linear-gradient(160deg, #1B2735 0%, #090A0F 100%);
+  }
+  html[data-theme="glassfireflies"] body::before,
+  html[data-theme="glassfireflies"] body::after{
+    width: 3px; height: 3px; border-radius: 50%;
+    background: transparent; filter: none; opacity: 1;
+    top: 0; left: 0; bottom: auto; right: auto;
+  }
+  html[data-theme="glassfireflies"] body::before{
+    box-shadow:
+      0px 5vh 2px rgba(255,244,214,0.9),
+      40px 15vh 1px rgba(255,255,255,0.7),
+      -30px 25vh 3px rgba(255,230,150,0.8),
+      60px 35vh 2px rgba(255,255,255,0.6),
+      -50px 45vh 1px rgba(255,244,214,0.85),
+      20px 55vh 3px rgba(255,255,255,0.5),
+      -20px 65vh 2px rgba(255,230,150,0.75),
+      70px 75vh 1px rgba(255,255,255,0.65),
+      -60px 85vh 2px rgba(255,244,214,0.8),
+      10px 95vh 1px rgba(255,255,255,0.55);
+    animation: fireflies-drift-ltr 38s linear infinite;
+  }
+  html[data-theme="glassfireflies"] body::after{
+    box-shadow:
+      0px 10vh 2px rgba(200,230,255,0.8),
+      -40px 20vh 1px rgba(255,255,255,0.6),
+      30px 30vh 3px rgba(200,230,255,0.7),
+      -60px 40vh 2px rgba(255,255,255,0.55),
+      50px 50vh 1px rgba(200,230,255,0.75),
+      -20px 60vh 3px rgba(255,255,255,0.5),
+      20px 70vh 2px rgba(200,230,255,0.65),
+      -70px 80vh 1px rgba(255,255,255,0.6),
+      60px 90vh 2px rgba(200,230,255,0.7);
+    animation: fireflies-drift-rtl 52s linear infinite;
+  }
+  @keyframes fireflies-drift-ltr{
+    0%{ transform: translate(-10vw, 0); }
+    25%{ transform: translate(15vw, -3vh); }
+    50%{ transform: translate(50vw, 2vh); }
+    75%{ transform: translate(85vw, -2vh); }
+    100%{ transform: translate(110vw, 0); }
+  }
+  @keyframes fireflies-drift-rtl{
+    0%{ transform: translate(110vw, 0); }
+    25%{ transform: translate(80vw, 3vh); }
+    50%{ transform: translate(45vw, -2vh); }
+    75%{ transform: translate(15vw, 2vh); }
+    100%{ transform: translate(-10vw, 0); }
+  }
 
   /* ---------- Video call ---------- */
   .incoming-call-banner{
@@ -1055,6 +1165,10 @@
     { id: "glasswaves", name: "Flowing Waves", swatch: "linear-gradient(135deg,#4FACFE,#43E97B)", vars: {
         "--bg":"#4FACFE", "--surface":"rgba(255,255,255,0.3)",
         "--line":"rgba(255,255,255,0.5)", "--bubble-them":"rgba(255,255,255,0.35)"
+      } },
+    { id: "glassfireflies", name: "Drifting Fireflies", swatch: "linear-gradient(160deg,#1B2735,#090A0F)", vars: {
+        "--bg":"#1B2735", "--surface":"rgba(255,255,255,0.08)", "--ink":"#F2F5F9",
+        "--ink-soft":"#A9B4C4", "--line":"rgba(255,255,255,0.16)", "--bubble-them":"rgba(255,255,255,0.1)"
       } }
   ];
 
@@ -2205,7 +2319,7 @@
       const sw = document.createElement("div");
       sw.className = "swatch" + (current === theme.id ? " selected" : "");
       sw.style.background = theme.swatch;
-      sw.style.color = ["black", "glassdark", "glassblue", "glassforest", "glassviolet", "glassporsche", "glassaurora", "glassparticles"].includes(theme.id) ? "#fff" : "#666";
+      sw.style.color = ["black", "glassdark", "glassblue", "glassforest", "glassviolet", "glassporsche", "glassaurora", "glassparticles", "glassfireflies"].includes(theme.id) ? "#fff" : "#666";
       sw.title = theme.name;
       sw.textContent = current === theme.id ? "✓" : "";
       sw.addEventListener("click", () => {
