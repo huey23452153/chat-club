@@ -625,6 +625,44 @@
   html[data-theme="glassporsche"] body::before{ background: radial-gradient(circle, #00AEEF, transparent 70%); }
   html[data-theme="glassporsche"] body::after{ background: radial-gradient(circle, #003153, transparent 70%); }
 
+  html[data-theme="glassaurora"] body{
+    background-image: linear-gradient(135deg, #000C40 0%, #00C9A7 35%, #7B2FF7 65%, #000C40 100%);
+  }
+  html[data-theme="glassaurora"] body::before{ background: radial-gradient(circle, #00F5A0, transparent 70%); }
+  html[data-theme="glassaurora"] body::after{ background: radial-gradient(circle, #7B2FF7, transparent 70%); }
+
+  /* Drifting particles: a dark field of small dots that slowly scrolls,
+     instead of the blurred color blobs the other Liquid Glass themes use. */
+  html[data-theme="glassparticles"] body{
+    background-color: #0B1220;
+    background-image:
+      radial-gradient(circle, rgba(255,255,255,0.9) 1px, transparent 1.5px),
+      radial-gradient(circle, rgba(255,255,255,0.55) 1px, transparent 1.5px),
+      radial-gradient(circle, rgba(255,255,255,0.3) 1px, transparent 1.5px);
+    background-size: 140px 140px, 200px 200px, 260px 260px;
+    background-position: 0 0, 50px 70px, 100px 20px;
+    animation: particles-drift 50s linear infinite;
+  }
+  @keyframes particles-drift{
+    from{ background-position: 0 0, 50px 70px, 100px 20px; }
+    to{ background-position: -280px -280px, -260px -210px, -390px -300px; }
+  }
+
+  /* Flowing waves: diagonal color bands that scroll past, rather than a
+     single gradient that just eases back and forth. */
+  html[data-theme="glasswaves"] body{
+    background-image: repeating-linear-gradient(60deg,
+      #4FACFE 0%, #00F2FE 12%, #43E97B 24%, #38F9D7 36%, #4FACFE 48%);
+    background-size: 400% 400%;
+    animation: waves-flow 14s linear infinite;
+  }
+  @keyframes waves-flow{
+    0%{ background-position: 0% 0%; }
+    100%{ background-position: 100% 100%; }
+  }
+  html[data-theme="glasswaves"] body::before{ background: radial-gradient(circle, #43E97B, transparent 70%); }
+  html[data-theme="glasswaves"] body::after{ background: radial-gradient(circle, #4FACFE, transparent 70%); }
+
   /* ---------- Video call ---------- */
   .incoming-call-banner{
     position: fixed; top: calc(14px + env(safe-area-inset-top)); left:50%; transform: translateX(-50%);
@@ -1005,6 +1043,18 @@
     { id: "glassporsche", name: "Porsche Blue Glass", swatch: "linear-gradient(135deg,#00AEEF,#003153)", vars: {
         "--bg":"#0072CE", "--surface":"rgba(255,255,255,0.22)", "--ink":"#F2FAFF",
         "--ink-soft":"#C7E6FA", "--line":"rgba(255,255,255,0.3)", "--bubble-them":"rgba(255,255,255,0.2)"
+      } },
+    { id: "glassaurora", name: "Aurora Glass", swatch: "linear-gradient(135deg,#00C9A7,#7B2FF7)", vars: {
+        "--bg":"#000C40", "--surface":"rgba(255,255,255,0.15)", "--ink":"#F2FBF9",
+        "--ink-soft":"#BFE9DF", "--line":"rgba(255,255,255,0.22)", "--bubble-them":"rgba(255,255,255,0.15)"
+      } },
+    { id: "glassparticles", name: "Drifting Particles", swatch: "#0B1220", vars: {
+        "--bg":"#0B1220", "--surface":"rgba(255,255,255,0.08)", "--ink":"#F2F5F9",
+        "--ink-soft":"#A9B4C4", "--line":"rgba(255,255,255,0.18)", "--bubble-them":"rgba(255,255,255,0.12)"
+      } },
+    { id: "glasswaves", name: "Flowing Waves", swatch: "linear-gradient(135deg,#4FACFE,#43E97B)", vars: {
+        "--bg":"#4FACFE", "--surface":"rgba(255,255,255,0.3)",
+        "--line":"rgba(255,255,255,0.5)", "--bubble-them":"rgba(255,255,255,0.35)"
       } }
   ];
 
@@ -2155,7 +2205,7 @@
       const sw = document.createElement("div");
       sw.className = "swatch" + (current === theme.id ? " selected" : "");
       sw.style.background = theme.swatch;
-      sw.style.color = ["black", "glassdark", "glassblue", "glassforest", "glassviolet", "glassporsche"].includes(theme.id) ? "#fff" : "#666";
+      sw.style.color = ["black", "glassdark", "glassblue", "glassforest", "glassviolet", "glassporsche", "glassaurora", "glassparticles"].includes(theme.id) ? "#fff" : "#666";
       sw.title = theme.name;
       sw.textContent = current === theme.id ? "✓" : "";
       sw.addEventListener("click", () => {
