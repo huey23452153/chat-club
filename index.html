@@ -2263,29 +2263,45 @@
     await startLocalMedia();
     showCallOverlay("Connecting...");
 
-    // If nobody's actually still in the call, this is a fresh start —
-    // wipe any leftover `peers` signaling data from however the last call
-    // ended (ghost timeout, someone just closing their tab, etc., none of
-    // which reliably clean up after themselves). Without this, a stale
-    // offer/answer from a completely dead session could get picked up and
-    // "answered" as if it were live, which fails silently: no error, just
-    // a peer connection that never actually receives video.
+    // Read any peer signaling data left over from a previous time we were
+    // in this call. Rejoining after leaving is the common case this needs
+    // to handle — not just "the whole call ended" — because the pair key
+    // for "me and someone who's still here" is the same key our earlier
+    // session used, and that entry could still hold a dead offer/answer
+    // from a peer connection the other side already discarded. Picking
+    // that up and trying to negotiate with it fails silently: no error,
+    // just a connection stuck forever with nothing to talk to.
     const existingSnap = await getDoc(callDocRef(groupId));
-    const existingLive = getLiveParticipants(existingSnap.exists() ? existingSnap.data().participants : null);
-    const isFreshStart = Object.keys(existingLive).length === 0;
+    const docExists = existingSnap.exists();
+    const existingPeers = (docExists && existingSnap.data().peers) || {};
+    const myStaleKeys = Object.keys(existingPeers).filter(key =>
+      key.startsWith(`${currentUser.uid}_`) || key.endsWith(`_${currentUser.uid}`)
+    );
 
-    // A real nested object here (not a "participants.<uid>" dotted string
-    // key) — setDoc's merge only parses actual nested objects as deep
-    // merges; a dotted string key would be stored as one literal top-level
-    // field name containing a dot, silently breaking every participants
-    // read. (updateDoc, used elsewhere below, does parse dotted keys.)
-    const joinUpdate = {
-      status: "active",
-      participants: { [currentUser.uid]: { name: currentUser.displayName, lastSeen: serverTimestamp() } },
-      updatedAt: serverTimestamp()
-    };
-    if(isFreshStart) joinUpdate.peers = {};
-    await setDoc(callDocRef(groupId), joinUpdate, { merge: true });
+    if(docExists){
+      // One write, not two: announcing "I'm back" and clearing my own
+      // stale pairs together, atomically, so nobody watching this doc can
+      // ever observe me as present while my dead signaling data is still
+      // sitting there to be misread as live (which a separate follow-up
+      // cleanup write could momentarily allow). updateDoc's dotted paths
+      // set/delete exactly those nested keys without touching anyone
+      // else's still-live entries.
+      const update = {
+        status: "active",
+        [`participants.${currentUser.uid}`]: { name: currentUser.displayName, lastSeen: serverTimestamp() },
+        updatedAt: serverTimestamp()
+      };
+      for(const key of myStaleKeys) update[`peers.${key}`] = deleteField();
+      await updateDoc(callDocRef(groupId), update);
+    } else {
+      // First-ever call in this group — nothing to clean up, and updateDoc
+      // would fail on a document that doesn't exist yet.
+      await setDoc(callDocRef(groupId), {
+        status: "active",
+        participants: { [currentUser.uid]: { name: currentUser.displayName, lastSeen: serverTimestamp() } },
+        updatedAt: serverTimestamp()
+      });
+    }
     // Only mark ourselves "in the call" once the write actually commits —
     // setting this earlier raced with the call-doc listener's own initial
     // "doesn't exist yet" snapshot, which could arrive while this was

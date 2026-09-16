@@ -366,3 +366,110 @@ test("the call keeps receiving updates even if you switch to a different chat", 
   await ctxA.close();
   await ctxB.close();
 });
+
+test("leaving and rejoining a call that others stayed in still connects properly", async ({ browser }) => {
+  const ctxA = await browser.newContext();
+  const ctxB = await browser.newContext();
+  const pageA = await ctxA.newPage();
+  const pageB = await ctxB.newPage();
+
+  const nameA = uniqueName("Ivy");
+  const nameB = uniqueName("Jack");
+
+  await signup(pageA, nameA);
+  await signup(pageB, nameB);
+
+  await createGroup(pageA, "Rejoin Chat");
+  await inviteToGroup(pageA, nameB);
+  await acceptFirstInvite(pageB);
+
+  await pageB.locator(".chat-item-name", { hasText: "Rejoin Chat" }).click();
+  await pageB.waitForSelector("#chatView", { state: "visible" });
+
+  // Both join; A leaves while B stays in the call; A rejoins. This is the
+  // scenario that a "reset only when everyone's gone" fix wouldn't catch —
+  // B never left, so the whole-call peer data never got wiped, and A's
+  // rejoin has to clean up only its own stale entries.
+  await pageA.click("#callBtn");
+  await pageB.click("#acceptCallBtn");
+  await expect(pageA.locator("#callStatusText")).toHaveText("Connected", { timeout: 15000 });
+
+  await pageA.click("#endCallBtn");
+  await expect(pageB.locator("#callStatusText")).toHaveText("Waiting for others to join...", { timeout: 10000 });
+
+  // B is still in the call, so A now sees an incoming-call banner (which
+  // visually sits over the header's Call button) rather than a plain idle
+  // state — accept it, same as a real user would, instead of the button
+  // underneath it.
+  await expect(pageA.locator("#incomingCallBanner")).toHaveClass(/show/, { timeout: 10000 });
+  await pageA.click("#acceptCallBtn");
+  await expect(pageA.locator("#callStatusText")).toHaveText("Connected", { timeout: 15000 });
+  await expect(pageB.locator("#callStatusText")).toHaveText("Connected", { timeout: 15000 });
+  await expect(pageA.locator(".remote-video-tile")).toHaveCount(1, { timeout: 15000 });
+  await expect(pageB.locator(".remote-video-tile")).toHaveCount(1, { timeout: 15000 });
+
+  await ctxA.close();
+  await ctxB.close();
+});
+
+test("in a three-person call, each person leaving and rejoining in turn still works", async ({ browser }) => {
+  const ctxA = await browser.newContext();
+  const ctxB = await browser.newContext();
+  const ctxC = await browser.newContext();
+  const pageA = await ctxA.newPage();
+  const pageB = await ctxB.newPage();
+  const pageC = await ctxC.newPage();
+
+  const nameA = uniqueName("Kara");
+  const nameB = uniqueName("Liam");
+  const nameC = uniqueName("Maya");
+
+  await signup(pageA, nameA);
+  await signup(pageB, nameB);
+  await signup(pageC, nameC);
+
+  await createGroup(pageA, "Trio Rejoin Chat");
+  await inviteToGroup(pageA, nameB);
+  await acceptFirstInvite(pageB);
+  await inviteToGroup(pageA, nameC);
+  await acceptFirstInvite(pageC);
+
+  for (const p of [pageB, pageC]) {
+    await p.locator(".chat-item-name", { hasText: "Trio Rejoin Chat" }).click();
+    await p.waitForSelector("#chatView", { state: "visible" });
+  }
+
+  await pageA.click("#callBtn");
+  await pageB.click("#acceptCallBtn");
+  await pageC.click("#acceptCallBtn");
+  for (const p of [pageA, pageB, pageC]) {
+    await expect(p.locator("#callStatusText")).toHaveText("Connected", { timeout: 15000 });
+  }
+
+  // B leaves while A and C stay, then rejoins. A and C are still in the
+  // call, so B sees an incoming-call banner (which visually sits over the
+  // header's Call button) rather than a plain idle state — accept it, same
+  // as a real user would, instead of the button underneath it.
+  await pageB.click("#endCallBtn");
+  await expect(pageA.locator(".remote-video-tile")).toHaveCount(1, { timeout: 10000 });
+  await expect(pageB.locator("#incomingCallBanner")).toHaveClass(/show/, { timeout: 10000 });
+  await pageB.click("#acceptCallBtn");
+  await expect(pageB.locator("#callStatusText")).toHaveText("Connected", { timeout: 15000 });
+  await expect(pageB.locator(".remote-video-tile")).toHaveCount(2, { timeout: 15000 });
+  await expect(pageA.locator(".remote-video-tile")).toHaveCount(2, { timeout: 15000 });
+
+  // Then C does the exact same thing — a different person leaving and
+  // rejoining the same ongoing call.
+  await pageC.click("#endCallBtn");
+  await expect(pageA.locator(".remote-video-tile")).toHaveCount(1, { timeout: 10000 });
+  await expect(pageC.locator("#incomingCallBanner")).toHaveClass(/show/, { timeout: 10000 });
+  await pageC.click("#acceptCallBtn");
+  await expect(pageC.locator("#callStatusText")).toHaveText("Connected", { timeout: 15000 });
+  await expect(pageC.locator(".remote-video-tile")).toHaveCount(2, { timeout: 15000 });
+  await expect(pageA.locator(".remote-video-tile")).toHaveCount(2, { timeout: 15000 });
+  await expect(pageB.locator(".remote-video-tile")).toHaveCount(2, { timeout: 15000 });
+
+  await ctxA.close();
+  await ctxB.close();
+  await ctxC.close();
+});
