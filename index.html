@@ -816,15 +816,28 @@
     display:grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
     gap:10px; width:100%; max-width: 820px; max-height: min(65vh, 480px);
     flex-shrink: 1; min-height: 0;
+    /* Grid track sizing doesn't know about max-height — with few, wide
+       columns (e.g. exactly 2 tiles in a 1:1 call), aspect-ratio can drive
+       a tile far taller than this box, overflowing into the controls below
+       and intercepting clicks meant for them. Clip at the container... */
+    overflow: hidden;
   }
   .video-tile{
     position: relative; aspect-ratio:4/3; border-radius:14px; overflow:hidden; background:#000;
+    /* ...and cap each tile individually too, so a couple of wide tiles
+       can't grow tall enough to matter before the container clip even
+       applies. */
+    max-height: 280px;
   }
   .video-tile video{ width:100%; height:100%; object-fit:cover; }
   .video-tile.local-video video{
     transform: scaleX(-1); /* mirror the self-view, like a real mirror — the outgoing stream sent to others is unaffected */
   }
   .video-tile.local-video{ border:2px solid rgba(255,255,255,0.6); }
+  /* A remote video, after going through real-time encode/decode, often
+     looks visibly dimmer/flatter than your own raw camera preview even
+     though the source footage is the same — nudge it back up to match. */
+  .remote-video-tile video{ filter: brightness(1.2) contrast(1.05) saturate(1.05); }
   .video-tile-name{
     position:absolute; left:8px; bottom:8px; z-index:1;
     background: rgba(0,0,0,0.55); color:white; font-size:12px; font-weight:700;
@@ -2237,16 +2250,30 @@
   async function joinCall(groupId){
     await startLocalMedia();
     showCallOverlay("Connecting...");
+
+    // If nobody's actually still in the call, this is a fresh start —
+    // wipe any leftover `peers` signaling data from however the last call
+    // ended (ghost timeout, someone just closing their tab, etc., none of
+    // which reliably clean up after themselves). Without this, a stale
+    // offer/answer from a completely dead session could get picked up and
+    // "answered" as if it were live, which fails silently: no error, just
+    // a peer connection that never actually receives video.
+    const existingSnap = await getDoc(callDocRef(groupId));
+    const existingLive = getLiveParticipants(existingSnap.exists() ? existingSnap.data().participants : null);
+    const isFreshStart = Object.keys(existingLive).length === 0;
+
     // A real nested object here (not a "participants.<uid>" dotted string
     // key) — setDoc's merge only parses actual nested objects as deep
     // merges; a dotted string key would be stored as one literal top-level
     // field name containing a dot, silently breaking every participants
     // read. (updateDoc, used elsewhere below, does parse dotted keys.)
-    await setDoc(callDocRef(groupId), {
+    const joinUpdate = {
       status: "active",
       participants: { [currentUser.uid]: { name: currentUser.displayName, lastSeen: serverTimestamp() } },
       updatedAt: serverTimestamp()
-    }, { merge: true });
+    };
+    if(isFreshStart) joinUpdate.peers = {};
+    await setDoc(callDocRef(groupId), joinUpdate, { merge: true });
     // Only mark ourselves "in the call" once the write actually commits —
     // setting this earlier raced with the call-doc listener's own initial
     // "doesn't exist yet" snapshot, which could arrive while this was

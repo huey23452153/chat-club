@@ -278,3 +278,45 @@ test("the sender sees a 'Seen by' note once the other person reads the message",
   await ctxA.close();
   await ctxB.close();
 });
+
+test("starting a fresh call after a previous one ended still connects properly", async ({ browser }) => {
+  const ctxA = await browser.newContext();
+  const ctxB = await browser.newContext();
+  const pageA = await ctxA.newPage();
+  const pageB = await ctxB.newPage();
+
+  const nameA = uniqueName("Elle");
+  const nameB = uniqueName("Finn");
+
+  await signup(pageA, nameA);
+  await signup(pageB, nameB);
+
+  await createGroup(pageA, "Repeat Call Chat");
+  await inviteToGroup(pageA, nameB);
+  await acceptFirstInvite(pageB);
+
+  await pageB.locator(".chat-item-name", { hasText: "Repeat Call Chat" }).click();
+  await pageB.waitForSelector("#chatView", { state: "visible" });
+
+  // First call: connect, then both leave cleanly.
+  await pageA.click("#callBtn");
+  await pageB.click("#acceptCallBtn");
+  await expect(pageA.locator("#callStatusText")).toHaveText("Connected", { timeout: 15000 });
+  await pageB.click("#endCallBtn");
+  await pageA.click("#endCallBtn");
+  await expect(pageA.locator("#callOverlay")).not.toHaveClass(/show/);
+  await expect(pageB.locator("#callOverlay")).not.toHaveClass(/show/);
+
+  // Second call between the exact same two people: this is what leftover
+  // `peers` signaling data from the first call could poison — it should
+  // connect cleanly, not silently fail to exchange video.
+  await pageA.click("#callBtn");
+  await pageB.click("#acceptCallBtn");
+  await expect(pageA.locator("#callStatusText")).toHaveText("Connected", { timeout: 15000 });
+  await expect(pageB.locator("#callStatusText")).toHaveText("Connected", { timeout: 15000 });
+  await expect(pageA.locator(".remote-video-tile")).toHaveCount(1, { timeout: 15000 });
+  await expect(pageB.locator(".remote-video-tile")).toHaveCount(1, { timeout: 15000 });
+
+  await ctxA.close();
+  await ctxB.close();
+});
