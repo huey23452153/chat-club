@@ -473,3 +473,76 @@ test("in a three-person call, each person leaving and rejoining in turn still wo
   await ctxB.close();
   await ctxC.close();
 });
+
+test("a fifth person can't join once a call already has 4 people", async ({ browser }) => {
+  const ctxA = await browser.newContext();
+  const ctxB = await browser.newContext();
+  const ctxC = await browser.newContext();
+  const ctxD = await browser.newContext();
+  const ctxE = await browser.newContext();
+  const pageA = await ctxA.newPage();
+  const pageB = await ctxB.newPage();
+  const pageC = await ctxC.newPage();
+  const pageD = await ctxD.newPage();
+  const pageE = await ctxE.newPage();
+
+  const nameA = uniqueName("Kai");
+  const nameB = uniqueName("Lena");
+  const nameC = uniqueName("Milo");
+  const nameD = uniqueName("Nia");
+  const nameE = uniqueName("Omar");
+
+  await signup(pageA, nameA);
+  await signup(pageB, nameB);
+  await signup(pageC, nameC);
+  await signup(pageD, nameD);
+  await signup(pageE, nameE);
+
+  await createGroup(pageA, "Five Person Chat");
+  await inviteToGroup(pageA, nameB);
+  await acceptFirstInvite(pageB);
+  await inviteToGroup(pageA, nameC);
+  await acceptFirstInvite(pageC);
+  await inviteToGroup(pageA, nameD);
+  await acceptFirstInvite(pageD);
+  await inviteToGroup(pageA, nameE);
+  await acceptFirstInvite(pageE);
+
+  // A group bigger than the call cap still gets a call button — the cap is
+  // on who can be *in* the call at once, not on who's allowed to start one.
+  await expect(pageA.locator("#chatMemberCount")).toHaveText("5 people");
+  await expect(pageA.locator("#callBtn")).toBeVisible();
+
+  for (const p of [pageB, pageC, pageD, pageE]) {
+    await p.locator(".chat-item-name", { hasText: "Five Person Chat" }).click();
+    await p.waitForSelector("#chatView", { state: "visible" });
+  }
+
+  await pageA.click("#callBtn");
+  await pageB.click("#acceptCallBtn");
+  await pageC.click("#acceptCallBtn");
+  await pageD.click("#acceptCallBtn");
+
+  for (const p of [pageA, pageB, pageC, pageD]) {
+    await expect(p.locator("#callStatusText")).toHaveText("Connected", { timeout: 15000 });
+  }
+
+  // E is the 5th person: the incoming banner shouldn't even ring them once
+  // the call is full, and the header button should show it's full and be
+  // disabled rather than letting them squeeze in.
+  await expect(pageE.locator("#incomingCallBanner")).not.toHaveClass(/show/, { timeout: 10000 });
+  await expect(pageE.locator("#callBtn")).toHaveText("📹 Call Full (4/4)", { timeout: 10000 });
+  await expect(pageE.locator("#callBtn")).toBeDisabled();
+
+  // Once someone leaves, E should be let back in.
+  await pageD.click("#endCallBtn");
+  await expect(pageE.locator("#callBtn")).not.toBeDisabled({ timeout: 10000 });
+  await pageE.click("#callBtn");
+  await expect(pageE.locator("#callStatusText")).toHaveText("Connected", { timeout: 15000 });
+
+  await ctxA.close();
+  await ctxB.close();
+  await ctxC.close();
+  await ctxD.close();
+  await ctxE.close();
+});

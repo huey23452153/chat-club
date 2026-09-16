@@ -1269,6 +1269,7 @@
   const peerConnections = new Map(); // otherUid -> RTCPeerConnection, one per other participant
   const CALL_HEARTBEAT_MS = 8000;
   const CALL_STALE_MS = 25000; // no heartbeat in this long = treat as gone
+  const MAX_CALL_PARTICIPANTS = 4; // mesh calling (no media server) tops out here
 
   // =========================================================================
   //  DOM SHORTCUTS
@@ -1668,10 +1669,11 @@
     $("chatTitle").textContent = g.name;
     $("chatMemberCount").textContent = `${(g.memberIds||[]).length} people`;
     $("deleteChatBtn").style.display = (g.ownerId === currentUser.uid) ? "inline-flex" : "none";
-    // Mesh calling only holds up for small groups — each person uploads one
-    // stream per other participant, so it gets rough past a handful of people.
+    // Any group can start a call now — the MAX_CALL_PARTICIPANTS cap on who
+    // can actually be *in* it at once (mesh calling gets rough past a
+    // handful of people) is enforced in joinCall/handleCallDocChange instead.
     const memberCount = (g.memberIds||[]).length;
-    $("callBtn").style.display = (memberCount >= 2 && memberCount <= 4) ? "inline-flex" : "none";
+    $("callBtn").style.display = (memberCount >= 2) ? "inline-flex" : "none";
   }
 
   $("deleteChatBtn").addEventListener("click", async () => {
@@ -2260,6 +2262,18 @@
   }
 
   async function joinCall(groupId){
+    // Check the head count *before* touching the camera or writing anything —
+    // mesh calling (no media server) only holds up to MAX_CALL_PARTICIPANTS
+    // people, so a late joiner should get turned away cleanly instead of
+    // grabbing their camera for nothing or squeezing into an already-full call.
+    const preCheckSnap = await getDoc(callDocRef(groupId));
+    if(preCheckSnap.exists()){
+      const liveNow = getLiveParticipants(preCheckSnap.data().participants);
+      if(!(currentUser.uid in liveNow) && Object.keys(liveNow).length >= MAX_CALL_PARTICIPANTS){
+        throw new Error(`This call is full (max ${MAX_CALL_PARTICIPANTS} people). Try again once someone leaves.`);
+      }
+    }
+
     await startLocalMedia();
     showCallOverlay("Connecting...");
 
@@ -2271,7 +2285,7 @@
     // from a peer connection the other side already discarded. Picking
     // that up and trying to negotiate with it fails silently: no error,
     // just a connection stuck forever with nothing to talk to.
-    const existingSnap = await getDoc(callDocRef(groupId));
+    const existingSnap = preCheckSnap;
     const docExists = existingSnap.exists();
     const existingPeers = (docExists && existingSnap.data().peers) || {};
     const myStaleKeys = Object.keys(existingPeers).filter(key =>
@@ -2431,16 +2445,23 @@
       hideIncomingBanner();
       if(activeCallGroupId === groupId) endCallLocally();
       $("callBtn").textContent = "📹 Call";
+      $("callBtn").disabled = false;
       return;
     }
 
     const amIIn = uids.includes(currentUser.uid);
     if(!amIIn){
-      $("callBtn").textContent = "📹 Join Call";
-      if(!activeCallGroupId) showIncomingBanner(groupId, participants);
+      const isFull = uids.length >= MAX_CALL_PARTICIPANTS;
+      $("callBtn").textContent = isFull ? `📹 Call Full (${uids.length}/${MAX_CALL_PARTICIPANTS})` : "📹 Join Call";
+      $("callBtn").disabled = isFull;
+      // Still let a late joiner see who's on the call, but a full call
+      // isn't something they can actually get into — don't ring them for it.
+      if(!activeCallGroupId && !isFull) showIncomingBanner(groupId, participants);
+      else if(isFull) hideIncomingBanner();
       return;
     }
     hideIncomingBanner();
+    $("callBtn").disabled = false;
 
     // Drop connections for anyone who's left since the last update.
     for(const uid of Array.from(peerConnections.keys())){
