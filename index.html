@@ -799,15 +799,23 @@
 
   .call-overlay{
     position: fixed; inset:0; background: rgba(10,20,20,0.92);
-    z-index: 250; display:none; flex-direction:column; align-items:center; justify-content:center;
-    padding: 20px;
+    z-index: 250; display:none; flex-direction:column; align-items:center;
+    padding: 20px; padding-bottom: max(20px, env(safe-area-inset-bottom));
+    /* On shorter/tablet viewports the status text + video grid + controls
+       can add up to taller than the screen. Plain `center` clips symmetrically
+       when content overflows, making the far edge (here, the hang-up button)
+       unreachable even with scroll enabled — `safe center` falls back to
+       start-alignment in that case instead, keeping everything reachable. */
+    justify-content: safe center;
+    overflow-y: auto;
   }
   .call-overlay.show{ display:flex; }
   /* Up to 4 tiles (self + 3 others): a responsive grid rather than the
      fixed self-in-corner layout a strictly 1:1 call would use. */
   .call-videos-grid{
     display:grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-    gap:10px; width:100%; max-width: 820px; max-height:65vh;
+    gap:10px; width:100%; max-width: 820px; max-height: min(65vh, 480px);
+    flex-shrink: 1; min-height: 0;
   }
   .video-tile{
     position: relative; aspect-ratio:4/3; border-radius:14px; overflow:hidden; background:#000;
@@ -828,8 +836,8 @@
     background: rgba(10,20,20,0.7); color:#FFD166; font-size:12.5px; font-weight:700;
     padding: 8px;
   }
-  .call-status{ color:white; font-weight:700; margin: 14px 0; font-size:15px; }
-  .call-controls{ display:flex; gap:14px; }
+  .call-status{ color:white; font-weight:700; margin: 14px 0; font-size:15px; flex-shrink:0; }
+  .call-controls{ display:flex; gap:14px; flex-shrink:0; }
   .call-control-btn{
     width:52px; height:52px; border-radius:50%; border:none;
     background: rgba(255,255,255,0.15); color:white; font-size:20px;
@@ -1243,7 +1251,10 @@
   let localStream = null;
   let activeCallGroupId = null;   // set once I've actually joined a call
   let pendingCallGroupId = null;  // the group whose incoming-call banner is showing
+  let callHeartbeatInterval = null;
   const peerConnections = new Map(); // otherUid -> RTCPeerConnection, one per other participant
+  const CALL_HEARTBEAT_MS = 8000;
+  const CALL_STALE_MS = 25000; // no heartbeat in this long = treat as gone
 
   // =========================================================================
   //  DOM SHORTCUTS
@@ -2215,6 +2226,7 @@
     for(const uid of Array.from(peerConnections.keys())) closePeerConnection(uid);
     peerConnections.clear();
     if(localStream){ localStream.getTracks().forEach(t => t.stop()); localStream = null; }
+    if(callHeartbeatInterval){ clearInterval(callHeartbeatInterval); callHeartbeatInterval = null; }
     activeCallGroupId = null;
   }
   function endCallLocally(){
@@ -2232,7 +2244,7 @@
     // read. (updateDoc, used elsewhere below, does parse dotted keys.)
     await setDoc(callDocRef(groupId), {
       status: "active",
-      participants: { [currentUser.uid]: currentUser.displayName },
+      participants: { [currentUser.uid]: { name: currentUser.displayName, lastSeen: serverTimestamp() } },
       updatedAt: serverTimestamp()
     }, { merge: true });
     // Only mark ourselves "in the call" once the write actually commits —
@@ -2241,23 +2253,56 @@
     // already true and make handleCallDocChange think our brand-new call
     // had immediately ended, hiding the overlay we'd just shown.
     activeCallGroupId = groupId;
+
+    // Nothing removes us from `participants` if we just close the tab or
+    // lose network without clicking End Call, so keep refreshing a
+    // timestamp while we're actually here — anyone whose timestamp goes
+    // stale gets treated as gone (see getLivePeers below), independent of
+    // whether their own client ever gets a chance to clean up after itself.
+    if(callHeartbeatInterval) clearInterval(callHeartbeatInterval);
+    callHeartbeatInterval = setInterval(() => {
+      updateDoc(callDocRef(groupId), {
+        [`participants.${currentUser.uid}.lastSeen`]: serverTimestamp()
+      }).catch(()=>{});
+    }, CALL_HEARTBEAT_MS);
+  }
+
+  // Filters the raw participants map down to ones with a recent heartbeat.
+  // A missing/pending lastSeen (serverTimestamp() hasn't resolved locally
+  // yet) is treated as fresh rather than stale, so a just-joined participant
+  // isn't momentarily filtered out before their first heartbeat lands.
+  function getLiveParticipants(rawParticipants){
+    const now = Date.now();
+    const live = {};
+    for(const [uid, value] of Object.entries(rawParticipants || {})){
+      const name = typeof value === "string" ? value : value?.name;
+      const lastSeenMs = typeof value === "object" && value?.lastSeen?.toMillis ? value.lastSeen.toMillis() : null;
+      if(lastSeenMs === null || (now - lastSeenMs) < CALL_STALE_MS){
+        live[uid] = name;
+      }
+    }
+    return live;
   }
 
   function watchIceConnectionState(pc, otherUid){
+    // Without a TURN server, some pairs never find a direct route at all —
+    // that often shows up as getting permanently stuck in "checking" rather
+    // than ever reaching an explicit "failed" state. A flat deadline catches
+    // both cases instead of only reacting to state-change events.
+    const deadline = setTimeout(() => {
+      if(peerConnections.get(otherUid) === pc &&
+         !["connected", "completed"].includes(pc.iceConnectionState)){
+        setPeerConnectionStatus(otherUid, "Connection issue — no direct route found");
+      }
+    }, 10000);
     pc.oniceconnectionstatechange = () => {
       const state = pc.iceConnectionState;
-      if(state === "failed" || state === "disconnected"){
-        // "disconnected" can be a brief blip that recovers on its own, so
-        // don't alarm the user immediately — only flag it if it's still
-        // stuck a few seconds later.
-        setTimeout(() => {
-          if(peerConnections.get(otherUid) === pc &&
-             (pc.iceConnectionState === "failed" || pc.iceConnectionState === "disconnected")){
-            setPeerConnectionStatus(otherUid, "Connection issue — no direct route found");
-          }
-        }, 4000);
-      } else if(state === "connected" || state === "completed"){
+      if(state === "connected" || state === "completed"){
+        clearTimeout(deadline);
         setPeerConnectionStatus(otherUid, null);
+      } else if(state === "failed"){
+        clearTimeout(deadline);
+        setPeerConnectionStatus(otherUid, "Connection issue — no direct route found");
       }
     };
   }
@@ -2313,7 +2358,7 @@
   // who offers to whom, trickling ICE candidates, and dropping connections
   // for people who left — flows through this one call-document listener.
   function handleCallDocChange(groupId, data){
-    const participants = (data && data.participants) || {};
+    const participants = getLiveParticipants(data && data.participants);
     const uids = Object.keys(participants);
 
     if(uids.length === 0){
