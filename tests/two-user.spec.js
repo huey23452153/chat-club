@@ -60,7 +60,7 @@ test("a message sent by one person shows up live for the other", async ({ browse
   await ctxB.close();
 });
 
-test("the call button only appears once a chat has exactly two people", async ({ browser }) => {
+test("the call button appears once a solo chat gets a second person", async ({ browser }) => {
   const ctxA = await browser.newContext();
   const ctxB = await browser.newContext();
   const pageA = await ctxA.newPage();
@@ -116,16 +116,18 @@ test("starting a video call rings the other person, and accepting connects both 
   await expect(pageB.locator("#callOverlay")).toHaveClass(/show/);
   await expect(pageA.locator("#callStatusText")).toHaveText("Connected", { timeout: 15000 });
 
-  // Ending the call from one side should close it on both.
+  // It's a joinable room, not a 1:1 phone call — one person leaving
+  // shouldn't kick everyone else out.
   await pageA.click("#endCallBtn");
   await expect(pageA.locator("#callOverlay")).not.toHaveClass(/show/);
-  await expect(pageB.locator("#callOverlay")).not.toHaveClass(/show/, { timeout: 10000 });
+  await expect(pageB.locator("#callOverlay")).toHaveClass(/show/);
+  await expect(pageB.locator("#callStatusText")).toHaveText("Waiting for others to join...", { timeout: 10000 });
 
   await ctxA.close();
   await ctxB.close();
 });
 
-test("declining a call clears the caller's overlay", async ({ browser }) => {
+test("declining an incoming call only dismisses your own banner", async ({ browser }) => {
   const ctxA = await browser.newContext();
   const ctxB = await browser.newContext();
   const pageA = await ctxA.newPage();
@@ -149,11 +151,60 @@ test("declining a call clears the caller's overlay", async ({ browser }) => {
 
   await pageB.click("#declineCallBtn");
 
-  await expect(pageA.locator("#callStatusText")).toHaveText("Call declined", { timeout: 10000 });
-  await expect(pageA.locator("#callOverlay")).not.toHaveClass(/show/, { timeout: 10000 });
+  await expect(pageB.locator("#incomingCallBanner")).not.toHaveClass(/show/);
+  // Declining is purely local — it shouldn't write anything back, so the
+  // caller's call keeps running untouched.
+  await expect(pageA.locator("#callOverlay")).toHaveClass(/show/);
+  await expect(pageA.locator("#callStatusText")).toHaveText("Waiting for others to join...");
 
   await ctxA.close();
   await ctxB.close();
+});
+
+test("a three-person group call connects everyone to everyone", async ({ browser }) => {
+  const ctxA = await browser.newContext();
+  const ctxB = await browser.newContext();
+  const ctxC = await browser.newContext();
+  const pageA = await ctxA.newPage();
+  const pageB = await ctxB.newPage();
+  const pageC = await ctxC.newPage();
+
+  const nameA = uniqueName("Tia");
+  const nameB = uniqueName("Umar");
+  const nameC = uniqueName("Vik");
+
+  await signup(pageA, nameA);
+  await signup(pageB, nameB);
+  await signup(pageC, nameC);
+
+  await createGroup(pageA, "Trio Call Chat");
+  await inviteToGroup(pageA, nameB);
+  await acceptFirstInvite(pageB);
+  await inviteToGroup(pageA, nameC);
+  await acceptFirstInvite(pageC);
+
+  await expect(pageA.locator("#chatMemberCount")).toHaveText("3 people");
+  await expect(pageA.locator("#callBtn")).toBeVisible();
+
+  for (const p of [pageB, pageC]) {
+    await p.locator(".chat-item-name", { hasText: "Trio Call Chat" }).click();
+    await p.waitForSelector("#chatView", { state: "visible" });
+  }
+
+  await pageA.click("#callBtn");
+  await pageB.click("#acceptCallBtn");
+  await pageC.click("#acceptCallBtn");
+
+  // Everyone should end up "Connected", each seeing their own tile plus one
+  // remote tile per other participant (2 others each, in a 3-person call).
+  for (const p of [pageA, pageB, pageC]) {
+    await expect(p.locator("#callStatusText")).toHaveText("Connected", { timeout: 15000 });
+    await expect(p.locator(".remote-video-tile")).toHaveCount(2, { timeout: 15000 });
+  }
+
+  await ctxA.close();
+  await ctxB.close();
+  await ctxC.close();
 });
 
 test("an owner can remove a member from the group", async ({ browser }) => {

@@ -803,12 +803,18 @@
     padding: 20px;
   }
   .call-overlay.show{ display:flex; }
-  .call-videos{ position: relative; width:100%; max-width: 720px; aspect-ratio: 4/3; }
-  .remote-video{ width:100%; height:100%; background:#000; border-radius:16px; object-fit:cover; }
+  /* Up to 4 tiles (self + 3 others): a responsive grid rather than the
+     fixed self-in-corner layout a strictly 1:1 call would use. */
+  .call-videos-grid{
+    display:grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap:10px; width:100%; max-width: 820px; max-height:65vh;
+  }
+  .call-videos-grid video{
+    width:100%; aspect-ratio:4/3; object-fit:cover; border-radius:14px; background:#000;
+  }
   .local-video{
-    position:absolute; width: 30%; max-width:160px; right:12px; bottom:12px;
-    border-radius:12px; border:2px solid rgba(255,255,255,0.6); object-fit:cover; background:#000;
-    transform: scaleX(-1); /* mirror the self-view, like a real mirror — the outgoing stream sent to the other person is unaffected */
+    border:2px solid rgba(255,255,255,0.6);
+    transform: scaleX(-1); /* mirror the self-view, like a real mirror — the outgoing stream sent to others is unaffected */
   }
   .call-status{ color:white; font-weight:700; margin: 14px 0; font-size:15px; }
   .call-controls{ display:flex; gap:14px; }
@@ -843,10 +849,7 @@
 </div>
 <div class="call-overlay" id="callOverlay">
   <div class="call-status" id="callStatusText">Calling...</div>
-  <div class="call-videos">
-    <video class="remote-video" id="remoteVideo" autoplay playsinline></video>
-    <video class="local-video" id="localVideo" autoplay playsinline muted></video>
-  </div>
+  <div class="call-videos-grid" id="callVideosGrid"></div>
   <div class="call-controls">
     <button class="call-control-btn" id="toggleMicBtn" title="Mute mic">🎤</button>
     <button class="call-control-btn" id="toggleCamBtn" title="Toggle camera">📷</button>
@@ -1225,11 +1228,10 @@
   let typingTimeout = null;
   let lastSentAt = 0;
   let callUnsub = null;
-  let pc = null;                 // RTCPeerConnection for the current call
   let localStream = null;
-  let callRole = null;           // "caller" | "callee"
-  let activeCallGroupId = null;
-  let processedRemoteCandidates = 0;
+  let activeCallGroupId = null;   // set once I've actually joined a call
+  let pendingCallGroupId = null;  // the group whose incoming-call banner is showing
+  const peerConnections = new Map(); // otherUid -> RTCPeerConnection, one per other participant
 
   // =========================================================================
   //  DOM SHORTCUTS
@@ -1629,8 +1631,10 @@
     $("chatTitle").textContent = g.name;
     $("chatMemberCount").textContent = `${(g.memberIds||[]).length} people`;
     $("deleteChatBtn").style.display = (g.ownerId === currentUser.uid) ? "inline-flex" : "none";
-    // Video calling is 1:1 only for now, so only offer it in two-person chats.
-    $("callBtn").style.display = (g.memberIds||[]).length === 2 ? "inline-flex" : "none";
+    // Mesh calling only holds up for small groups — each person uploads one
+    // stream per other participant, so it gets rough past a handful of people.
+    const memberCount = (g.memberIds||[]).length;
+    $("callBtn").style.display = (memberCount >= 2 && memberCount <= 4) ? "inline-flex" : "none";
   }
 
   $("deleteChatBtn").addEventListener("click", async () => {
@@ -2094,15 +2098,48 @@
   }
 
   // =========================================================================
-  //  VIDEO CALLS (1:1 only) — WebRTC with Firestore used purely as the
-  //  signaling channel to exchange the offer/answer/ICE candidates. No TURN
-  //  server, so a direct connection isn't guaranteed on every network.
+  //  VIDEO CALLS (mesh, 2-4 people) — every participant opens a direct
+  //  WebRTC connection to every other participant. Firestore is used purely
+  //  as the signaling channel: one call document per group holds who's in
+  //  the call plus a `peers` map keyed "fromUid_toUid" with each pair's
+  //  offer/answer/ICE candidates. No TURN server, so a direct connection
+  //  isn't guaranteed on every network. No SFU, so this doesn't scale past
+  //  a handful of people — each participant uploads one stream per other
+  //  participant.
   // =========================================================================
   function callDocRef(groupId){ return doc(db, "groups", groupId, "calls", "current"); }
 
   async function startLocalMedia(){
     localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-    $("localVideo").srcObject = localStream;
+    let vid = document.getElementById("localVideo");
+    if(!vid){
+      vid = document.createElement("video");
+      vid.id = "localVideo";
+      vid.className = "local-video";
+      vid.autoplay = true; vid.playsInline = true; vid.muted = true;
+      $("callVideosGrid").appendChild(vid);
+    }
+    vid.srcObject = localStream;
+  }
+
+  function ensureRemoteVideoTile(uid){
+    let vid = document.getElementById(`remoteVideo-${uid}`);
+    if(!vid){
+      vid = document.createElement("video");
+      vid.id = `remoteVideo-${uid}`;
+      vid.className = "remote-video-tile";
+      vid.autoplay = true; vid.playsInline = true;
+      $("callVideosGrid").appendChild(vid);
+    }
+    return vid;
+  }
+
+  function closePeerConnection(uid){
+    const pc = peerConnections.get(uid);
+    if(pc) pc.close();
+    peerConnections.delete(uid);
+    const vid = document.getElementById(`remoteVideo-${uid}`);
+    if(vid) vid.remove();
   }
 
   function showCallOverlay(status){
@@ -2111,156 +2148,206 @@
     $("toggleCamBtn").classList.remove("muted");
     $("callOverlay").classList.add("show");
   }
-  function hideCallOverlay(){ $("callOverlay").classList.remove("show"); }
+  function hideCallOverlay(){
+    $("callOverlay").classList.remove("show");
+    $("callVideosGrid").innerHTML = "";
+  }
 
-  function showIncomingBanner(groupId, callerName){
-    activeCallGroupId = groupId;
-    $("incomingCallText").textContent = `${callerName} is calling...`;
+  function showIncomingBanner(groupId, participants){
+    pendingCallGroupId = groupId;
+    const names = Object.values(participants);
+    $("incomingCallText").textContent = names.length === 1
+      ? `${names[0]} started a call — join?`
+      : `${names.join(", ")} are in a call — join?`;
     $("incomingCallBanner").classList.add("show");
   }
-  function hideIncomingBanner(){ $("incomingCallBanner").classList.remove("show"); }
+  function hideIncomingBanner(){
+    pendingCallGroupId = null;
+    $("incomingCallBanner").classList.remove("show");
+  }
 
   function cleanupCallState(){
-    if(pc){ pc.close(); pc = null; }
+    for(const uid of Array.from(peerConnections.keys())) closePeerConnection(uid);
+    peerConnections.clear();
     if(localStream){ localStream.getTracks().forEach(t => t.stop()); localStream = null; }
-    callRole = null;
     activeCallGroupId = null;
-    processedRemoteCandidates = 0;
-    $("remoteVideo").srcObject = null;
-    $("localVideo").srcObject = null;
   }
   function endCallLocally(){
     hideCallOverlay();
     cleanupCallState();
   }
 
-  function handleCallDocChange(groupId, data){
-    if(!data){
-      if(callRole && activeCallGroupId === groupId) endCallLocally();
-      if(activeCallGroupId === groupId) hideIncomingBanner();
-      return;
-    }
+  async function joinCall(groupId){
+    await startLocalMedia();
+    showCallOverlay("Connecting...");
+    // A real nested object here (not a "participants.<uid>" dotted string
+    // key) — setDoc's merge only parses actual nested objects as deep
+    // merges; a dotted string key would be stored as one literal top-level
+    // field name containing a dot, silently breaking every participants
+    // read. (updateDoc, used elsewhere below, does parse dotted keys.)
+    await setDoc(callDocRef(groupId), {
+      status: "active",
+      participants: { [currentUser.uid]: currentUser.displayName },
+      updatedAt: serverTimestamp()
+    }, { merge: true });
+    // Only mark ourselves "in the call" once the write actually commits —
+    // setting this earlier raced with the call-doc listener's own initial
+    // "doesn't exist yet" snapshot, which could arrive while this was
+    // already true and make handleCallDocChange think our brand-new call
+    // had immediately ended, hiding the overlay we'd just shown.
+    activeCallGroupId = groupId;
+  }
 
-    if(data.status === "ended" || data.status === "declined"){
-      if(callRole === "caller" && data.status === "declined"){
-        $("callStatusText").textContent = "Call declined";
-        setTimeout(endCallLocally, 1200);
-      } else if(activeCallGroupId === groupId){
-        endCallLocally();
+  async function createOfferTo(groupId, otherUid){
+    const pc = new RTCPeerConnection(RTC_CONFIG);
+    peerConnections.set(otherUid, pc);
+    localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+    pc.ontrack = (e) => { ensureRemoteVideoTile(otherUid).srcObject = e.streams[0]; };
+    const key = `${currentUser.uid}_${otherUid}`;
+    pc.onicecandidate = (e) => {
+      if(e.candidate){
+        updateDoc(callDocRef(groupId), {
+          [`peers.${key}.offererCandidates`]: arrayUnion(e.candidate.toJSON())
+        }).catch(()=>{});
       }
+    };
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    await updateDoc(callDocRef(groupId), {
+      [`peers.${key}`]: {
+        fromUid: currentUser.uid, fromName: currentUser.displayName, toUid: otherUid,
+        offer: { sdp: offer.sdp, type: offer.type },
+        offererCandidates: [], answererCandidates: []
+      }
+    });
+  }
+
+  async function answerOfferFrom(groupId, otherUid, peerData){
+    const pc = new RTCPeerConnection(RTC_CONFIG);
+    peerConnections.set(otherUid, pc);
+    localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+    pc.ontrack = (e) => { ensureRemoteVideoTile(otherUid).srcObject = e.streams[0]; };
+    const key = `${otherUid}_${currentUser.uid}`;
+    pc.onicecandidate = (e) => {
+      if(e.candidate){
+        updateDoc(callDocRef(groupId), {
+          [`peers.${key}.answererCandidates`]: arrayUnion(e.candidate.toJSON())
+        }).catch(()=>{});
+      }
+    };
+    await pc.setRemoteDescription(new RTCSessionDescription(peerData.offer));
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    await updateDoc(callDocRef(groupId), {
+      [`peers.${key}.answer`]: { sdp: answer.sdp, type: answer.type }
+    });
+  }
+
+  // Everything about an active call — noticing new participants, deciding
+  // who offers to whom, trickling ICE candidates, and dropping connections
+  // for people who left — flows through this one call-document listener.
+  function handleCallDocChange(groupId, data){
+    const participants = (data && data.participants) || {};
+    const uids = Object.keys(participants);
+
+    if(uids.length === 0){
       hideIncomingBanner();
+      if(activeCallGroupId === groupId) endCallLocally();
       return;
     }
 
-    // Someone else is calling me and I haven't joined a call yet.
-    if(data.status === "ringing" && data.callerId !== currentUser.uid && !callRole){
-      showIncomingBanner(groupId, data.callerName);
+    const amIIn = uids.includes(currentUser.uid);
+    if(!amIIn){
+      if(!activeCallGroupId) showIncomingBanner(groupId, participants);
       return;
     }
+    hideIncomingBanner();
 
-    // I'm the caller, waiting for the callee's answer.
-    if(callRole === "caller" && pc && data.answer && !pc.currentRemoteDescription){
-      pc.setRemoteDescription(new RTCSessionDescription(data.answer)).catch(()=>{});
-      showCallOverlay("Connected");
+    // Drop connections for anyone who's left since the last update.
+    for(const uid of Array.from(peerConnections.keys())){
+      if(!uids.includes(uid)) closePeerConnection(uid);
     }
 
-    // Trickle in the other side's ICE candidates as they arrive.
-    if(pc && callRole){
-      const remoteCandidates = callRole === "caller" ? (data.calleeCandidates || []) : (data.callerCandidates || []);
-      remoteCandidates.slice(processedRemoteCandidates).forEach(c => {
-        pc.addIceCandidate(new RTCIceCandidate(c)).catch(()=>{});
-      });
-      processedRemoteCandidates = remoteCandidates.length;
+    const peers = data.peers || {};
+
+    // For every other participant I don't yet have a connection to: answer
+    // their offer if one exists, otherwise — only if my uid sorts first —
+    // create one myself. This tie-break means exactly one side initiates
+    // each pair, even if both clients react to the same snapshot at once.
+    for(const otherUid of uids){
+      if(otherUid === currentUser.uid || peerConnections.has(otherUid)) continue;
+      const incoming = peers[`${otherUid}_${currentUser.uid}`];
+      if(incoming && incoming.offer){
+        answerOfferFrom(groupId, otherUid, incoming).catch(()=>{});
+      } else if(currentUser.uid < otherUid){
+        createOfferTo(groupId, otherUid).catch(()=>{});
+      }
     }
+
+    // Complete the handshake and trickle ICE for connections already open.
+    for(const [otherUid, pc] of peerConnections.entries()){
+      const asOfferer = peers[`${currentUser.uid}_${otherUid}`];
+      const asAnswerer = peers[`${otherUid}_${currentUser.uid}`];
+
+      if(asOfferer){
+        if(asOfferer.answer && !pc.currentRemoteDescription){
+          pc.setRemoteDescription(new RTCSessionDescription(asOfferer.answer)).catch(()=>{});
+        }
+        const cands = asOfferer.answererCandidates || [];
+        const done = pc._processedCount || 0;
+        cands.slice(done).forEach(c => pc.addIceCandidate(new RTCIceCandidate(c)).catch(()=>{}));
+        pc._processedCount = cands.length;
+      }
+      if(asAnswerer){
+        const cands = asAnswerer.offererCandidates || [];
+        const done = pc._processedCount || 0;
+        cands.slice(done).forEach(c => pc.addIceCandidate(new RTCIceCandidate(c)).catch(()=>{}));
+        pc._processedCount = cands.length;
+      }
+    }
+
+    const othersCount = uids.length - 1;
+    $("callStatusText").textContent = othersCount > 0 ? "Connected" : "Waiting for others to join...";
   }
 
   $("callBtn").addEventListener("click", async () => {
     const groupId = activeGroupId;
     if(!groupId) return;
     try{
-      const existing = await getDoc(callDocRef(groupId));
-      if(existing.exists() && !["ended", "declined"].includes(existing.data().status)){
-        alert("There's already a call happening in this chat.");
-        return;
-      }
-      await startLocalMedia();
-      callRole = "caller";
-      activeCallGroupId = groupId;
-      processedRemoteCandidates = 0;
-      pc = new RTCPeerConnection(RTC_CONFIG);
-      localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
-      pc.ontrack = (e) => { $("remoteVideo").srcObject = e.streams[0]; };
-      pc.onicecandidate = (e) => {
-        if(e.candidate){
-          updateDoc(callDocRef(groupId), { callerCandidates: arrayUnion(e.candidate.toJSON()) }).catch(()=>{});
-        }
-      };
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      await setDoc(callDocRef(groupId), {
-        callerId: currentUser.uid,
-        callerName: currentUser.displayName,
-        offer: { sdp: offer.sdp, type: offer.type },
-        callerCandidates: [],
-        calleeCandidates: [],
-        status: "ringing",
-        createdAt: serverTimestamp()
-      });
-      showCallOverlay("Calling...");
+      await joinCall(groupId);
     } catch(err){
       console.error("Call failed to start:", err);
       alert(`Couldn't start the call (${err?.name || "error"}: ${err?.message || err}).`);
-      cleanupCallState();
+      cleanupCallState(); hideCallOverlay();
     }
   });
 
   $("acceptCallBtn").addEventListener("click", async () => {
-    const groupId = activeCallGroupId;
+    const groupId = pendingCallGroupId;
     hideIncomingBanner();
     if(!groupId) return;
     try{
-      const snap = await getDoc(callDocRef(groupId));
-      if(!snap.exists()) return;
-      const data = snap.data();
-      await startLocalMedia();
-      callRole = "callee";
-      activeCallGroupId = groupId;
-      processedRemoteCandidates = 0;
-      pc = new RTCPeerConnection(RTC_CONFIG);
-      localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
-      pc.ontrack = (e) => { $("remoteVideo").srcObject = e.streams[0]; };
-      pc.onicecandidate = (e) => {
-        if(e.candidate){
-          updateDoc(callDocRef(groupId), { calleeCandidates: arrayUnion(e.candidate.toJSON()) }).catch(()=>{});
-        }
-      };
-      await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      await updateDoc(callDocRef(groupId), {
-        answer: { sdp: answer.sdp, type: answer.type },
-        status: "active"
-      });
-      showCallOverlay("Connected");
+      await joinCall(groupId);
     } catch(err){
       console.error("Call failed to join:", err);
       alert(`Couldn't join the call (${err?.name || "error"}: ${err?.message || err}).`);
-      cleanupCallState();
+      cleanupCallState(); hideCallOverlay();
     }
   });
 
-  $("declineCallBtn").addEventListener("click", async () => {
-    const groupId = activeCallGroupId;
+  $("declineCallBtn").addEventListener("click", () => {
     hideIncomingBanner();
-    activeCallGroupId = null;
-    if(!groupId) return;
-    try{ await updateDoc(callDocRef(groupId), { status: "declined" }); } catch(e){}
   });
 
   $("endCallBtn").addEventListener("click", async () => {
     const groupId = activeCallGroupId;
+    const wasAlone = peerConnections.size === 0;
     if(groupId){
-      try{ await updateDoc(callDocRef(groupId), { status: "ended" }); } catch(e){}
+      try{
+        const update = { [`participants.${currentUser.uid}`]: deleteField(), updatedAt: serverTimestamp() };
+        if(wasAlone) update.peers = {}; // last one out resets signaling data for the next call
+        await updateDoc(callDocRef(groupId), update);
+      } catch(e){}
     }
     endCallLocally();
   });
