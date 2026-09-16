@@ -105,21 +105,29 @@ test("starting a video call rings the other person, and accepting connects both 
   await pageB.locator(".chat-item-name", { hasText: "Video Chat" }).click();
   await pageB.waitForSelector("#chatView", { state: "visible" });
 
+  await expect(pageA.locator("#callBtn")).toHaveText("📹 Call");
   await pageA.click("#callBtn");
   await expect(pageA.locator("#callOverlay")).toHaveClass(/show/);
 
   await expect(pageB.locator("#incomingCallBanner")).toHaveClass(/show/, { timeout: 10000 });
   await expect(pageB.locator("#incomingCallText")).toContainText(nameA);
+  await expect(pageB.locator("#callBtn")).toHaveText("📹 Join Call");
 
   await pageB.click("#acceptCallBtn");
 
   await expect(pageB.locator("#callOverlay")).toHaveClass(/show/);
   await expect(pageA.locator("#callStatusText")).toHaveText("Connected", { timeout: 15000 });
+  // Each side should see the other's name labeled on their video tile.
+  await expect(pageA.locator(".video-tile-name", { hasText: nameB })).toBeVisible();
+  await expect(pageB.locator(".video-tile-name", { hasText: nameA })).toBeVisible();
 
   // It's a joinable room, not a 1:1 phone call — one person leaving
   // shouldn't kick everyone else out.
   await pageA.click("#endCallBtn");
   await expect(pageA.locator("#callOverlay")).not.toHaveClass(/show/);
+  // B is still in the call, so A's button should offer to rejoin, not
+  // read as if there's no call at all.
+  await expect(pageA.locator("#callBtn")).toHaveText("📹 Join Call");
   await expect(pageB.locator("#callOverlay")).toHaveClass(/show/);
   await expect(pageB.locator("#callStatusText")).toHaveText("Waiting for others to join...", { timeout: 10000 });
 

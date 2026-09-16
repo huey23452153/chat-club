@@ -809,12 +809,24 @@
     display:grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
     gap:10px; width:100%; max-width: 820px; max-height:65vh;
   }
-  .call-videos-grid video{
-    width:100%; aspect-ratio:4/3; object-fit:cover; border-radius:14px; background:#000;
+  .video-tile{
+    position: relative; aspect-ratio:4/3; border-radius:14px; overflow:hidden; background:#000;
   }
-  .local-video{
-    border:2px solid rgba(255,255,255,0.6);
+  .video-tile video{ width:100%; height:100%; object-fit:cover; }
+  .video-tile.local-video video{
     transform: scaleX(-1); /* mirror the self-view, like a real mirror — the outgoing stream sent to others is unaffected */
+  }
+  .video-tile.local-video{ border:2px solid rgba(255,255,255,0.6); }
+  .video-tile-name{
+    position:absolute; left:8px; bottom:8px; z-index:1;
+    background: rgba(0,0,0,0.55); color:white; font-size:12px; font-weight:700;
+    padding: 3px 8px; border-radius: 999px;
+  }
+  .video-tile-status{
+    position:absolute; inset:0; z-index:1;
+    display:flex; align-items:center; justify-content:center; text-align:center;
+    background: rgba(10,20,20,0.7); color:#FFD166; font-size:12.5px; font-weight:700;
+    padding: 8px;
   }
   .call-status{ color:white; font-weight:700; margin: 14px 0; font-size:15px; }
   .call-controls{ display:flex; gap:14px; }
@@ -2113,33 +2125,66 @@
     localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
     let vid = document.getElementById("localVideo");
     if(!vid){
+      const tile = document.createElement("div");
+      tile.className = "video-tile local-video";
+      tile.id = "tile-local";
       vid = document.createElement("video");
       vid.id = "localVideo";
-      vid.className = "local-video";
       vid.autoplay = true; vid.playsInline = true; vid.muted = true;
-      $("callVideosGrid").appendChild(vid);
+      const label = document.createElement("div");
+      label.className = "video-tile-name";
+      label.textContent = "You";
+      tile.appendChild(vid);
+      tile.appendChild(label);
+      $("callVideosGrid").appendChild(tile);
     }
     vid.srcObject = localStream;
   }
 
-  function ensureRemoteVideoTile(uid){
+  function ensureRemoteVideoTile(uid, name){
     let vid = document.getElementById(`remoteVideo-${uid}`);
     if(!vid){
+      const tile = document.createElement("div");
+      tile.className = "video-tile remote-video-tile";
+      tile.id = `tile-${uid}`;
       vid = document.createElement("video");
       vid.id = `remoteVideo-${uid}`;
-      vid.className = "remote-video-tile";
       vid.autoplay = true; vid.playsInline = true;
-      $("callVideosGrid").appendChild(vid);
+      const label = document.createElement("div");
+      label.className = "video-tile-name";
+      label.textContent = name || "Friend";
+      const status = document.createElement("div");
+      status.className = "video-tile-status";
+      status.hidden = true;
+      tile.appendChild(vid);
+      tile.appendChild(label);
+      tile.appendChild(status);
+      $("callVideosGrid").appendChild(tile);
     }
     return vid;
+  }
+
+  // Shown when a specific pair's connection stalls or fails to find a
+  // route — with no TURN server, some networks genuinely can't connect
+  // directly, and a stuck-black tile with no explanation looks like a bug
+  // rather than a real limitation.
+  function setPeerConnectionStatus(uid, message){
+    const status = document.querySelector(`#tile-${uid} .video-tile-status`);
+    if(!status) return;
+    if(message){
+      status.textContent = message;
+      status.hidden = false;
+    } else {
+      status.hidden = true;
+    }
   }
 
   function closePeerConnection(uid){
     const pc = peerConnections.get(uid);
     if(pc) pc.close();
     peerConnections.delete(uid);
-    const vid = document.getElementById(`remoteVideo-${uid}`);
-    if(vid) vid.remove();
+    const tile = document.getElementById(`tile-${uid}`);
+    if(tile) tile.remove();
   }
 
   function showCallOverlay(status){
@@ -2198,11 +2243,31 @@
     activeCallGroupId = groupId;
   }
 
-  async function createOfferTo(groupId, otherUid){
+  function watchIceConnectionState(pc, otherUid){
+    pc.oniceconnectionstatechange = () => {
+      const state = pc.iceConnectionState;
+      if(state === "failed" || state === "disconnected"){
+        // "disconnected" can be a brief blip that recovers on its own, so
+        // don't alarm the user immediately — only flag it if it's still
+        // stuck a few seconds later.
+        setTimeout(() => {
+          if(peerConnections.get(otherUid) === pc &&
+             (pc.iceConnectionState === "failed" || pc.iceConnectionState === "disconnected")){
+            setPeerConnectionStatus(otherUid, "Connection issue — no direct route found");
+          }
+        }, 4000);
+      } else if(state === "connected" || state === "completed"){
+        setPeerConnectionStatus(otherUid, null);
+      }
+    };
+  }
+
+  async function createOfferTo(groupId, otherUid, otherName){
     const pc = new RTCPeerConnection(RTC_CONFIG);
     peerConnections.set(otherUid, pc);
     localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
-    pc.ontrack = (e) => { ensureRemoteVideoTile(otherUid).srcObject = e.streams[0]; };
+    pc.ontrack = (e) => { ensureRemoteVideoTile(otherUid, otherName).srcObject = e.streams[0]; };
+    watchIceConnectionState(pc, otherUid);
     const key = `${currentUser.uid}_${otherUid}`;
     pc.onicecandidate = (e) => {
       if(e.candidate){
@@ -2222,11 +2287,12 @@
     });
   }
 
-  async function answerOfferFrom(groupId, otherUid, peerData){
+  async function answerOfferFrom(groupId, otherUid, otherName, peerData){
     const pc = new RTCPeerConnection(RTC_CONFIG);
     peerConnections.set(otherUid, pc);
     localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
-    pc.ontrack = (e) => { ensureRemoteVideoTile(otherUid).srcObject = e.streams[0]; };
+    pc.ontrack = (e) => { ensureRemoteVideoTile(otherUid, otherName).srcObject = e.streams[0]; };
+    watchIceConnectionState(pc, otherUid);
     const key = `${otherUid}_${currentUser.uid}`;
     pc.onicecandidate = (e) => {
       if(e.candidate){
@@ -2253,11 +2319,13 @@
     if(uids.length === 0){
       hideIncomingBanner();
       if(activeCallGroupId === groupId) endCallLocally();
+      $("callBtn").textContent = "📹 Call";
       return;
     }
 
     const amIIn = uids.includes(currentUser.uid);
     if(!amIIn){
+      $("callBtn").textContent = "📹 Join Call";
       if(!activeCallGroupId) showIncomingBanner(groupId, participants);
       return;
     }
@@ -2278,9 +2346,9 @@
       if(otherUid === currentUser.uid || peerConnections.has(otherUid)) continue;
       const incoming = peers[`${otherUid}_${currentUser.uid}`];
       if(incoming && incoming.offer){
-        answerOfferFrom(groupId, otherUid, incoming).catch(()=>{});
+        answerOfferFrom(groupId, otherUid, participants[otherUid], incoming).catch(()=>{});
       } else if(currentUser.uid < otherUid){
-        createOfferTo(groupId, otherUid).catch(()=>{});
+        createOfferTo(groupId, otherUid, participants[otherUid]).catch(()=>{});
       }
     }
 
