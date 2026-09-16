@@ -320,3 +320,49 @@ test("starting a fresh call after a previous one ended still connects properly",
   await ctxA.close();
   await ctxB.close();
 });
+
+test("the call keeps receiving updates even if you switch to a different chat", async ({ browser }) => {
+  const ctxA = await browser.newContext();
+  const ctxB = await browser.newContext();
+  const pageA = await ctxA.newPage();
+  const pageB = await ctxB.newPage();
+
+  const nameA = uniqueName("Gwen");
+  const nameB = uniqueName("Hugo");
+
+  await signup(pageA, nameA);
+  await signup(pageB, nameB);
+
+  await createGroup(pageA, "Call Chat");
+  await inviteToGroup(pageA, nameB);
+  await acceptFirstInvite(pageB);
+  // A second group for A alone, to switch to mid-call.
+  await createGroup(pageA, "Other Chat");
+  await pageA.locator(".chat-item-name", { hasText: "Call Chat" }).click();
+
+  await pageB.locator(".chat-item-name", { hasText: "Call Chat" }).click();
+  await pageB.waitForSelector("#chatView", { state: "visible" });
+
+  await pageA.click("#callBtn");
+  await pageB.click("#acceptCallBtn");
+  await expect(pageA.locator("#callStatusText")).toHaveText("Connected", { timeout: 15000 });
+
+  // Force-click "Other Chat" in the sidebar via a raw DOM click, which
+  // (unlike Playwright's pointer-based click) bypasses the fact that it's
+  // visually covered by the full-screen call overlay — simulating whatever
+  // real navigation path might land a user on a different chat mid-call,
+  // to prove the call's own listener doesn't die when that happens.
+  await pageA.evaluate(() => {
+    const items = Array.from(document.querySelectorAll(".chat-item-name"));
+    const other = items.find(el => el.textContent.includes("Other Chat"));
+    other.closest(".chat-item").click();
+  });
+
+  // B leaves; if A's call listener died from the chat switch, A would be
+  // stuck showing "Connected" forever despite being alone in the call.
+  await pageB.click("#endCallBtn");
+  await expect(pageA.locator("#callStatusText")).toHaveText("Waiting for others to join...", { timeout: 10000 });
+
+  await ctxA.close();
+  await ctxB.close();
+});

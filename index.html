@@ -1260,7 +1260,8 @@
   let typingActive = false;
   let typingTimeout = null;
   let lastSentAt = 0;
-  let callUnsub = null;
+  let callUnsub = null;         // tied to whichever chat is open — for the incoming-call banner
+  let activeCallUnsub = null;   // tied to the call itself — stays live even if you switch chats
   let localStream = null;
   let activeCallGroupId = null;   // set once I've actually joined a call
   let pendingCallGroupId = null;  // the group whose incoming-call banner is showing
@@ -2162,7 +2163,17 @@
       tile.appendChild(label);
       $("callVideosGrid").appendChild(tile);
     }
-    vid.srcObject = localStream;
+    attachStream(vid, localStream);
+  }
+
+  // The `autoplay` HTML attribute alone isn't reliable once a stream is
+  // attached asynchronously well after the click that triggered it — some
+  // browsers just leave the element paused on a black frame with no error.
+  // Explicitly calling play() covers that; a rejected promise here just
+  // means autoplay was blocked, so it's swallowed rather than surfaced.
+  function attachStream(videoEl, stream){
+    videoEl.srcObject = stream;
+    videoEl.play?.().catch(()=>{});
   }
 
   function ensureRemoteVideoTile(uid, name){
@@ -2240,6 +2251,7 @@
     peerConnections.clear();
     if(localStream){ localStream.getTracks().forEach(t => t.stop()); localStream = null; }
     if(callHeartbeatInterval){ clearInterval(callHeartbeatInterval); callHeartbeatInterval = null; }
+    if(activeCallUnsub){ activeCallUnsub(); activeCallUnsub = null; }
     activeCallGroupId = null;
   }
   function endCallLocally(){
@@ -2280,6 +2292,17 @@
     // already true and make handleCallDocChange think our brand-new call
     // had immediately ended, hiding the overlay we'd just shown.
     activeCallGroupId = groupId;
+
+    // This listener is what actually drives the call (noticing new
+    // participants, trickling ICE, dropping people who left) and it has to
+    // outlive whichever chat happens to be open — `openGroup` tears down
+    // and replaces its own call-doc listener every time you open any chat,
+    // so if that were the only listener, switching chats mid-call would
+    // silently stop you from ever hearing about new joiners again.
+    if(activeCallUnsub) activeCallUnsub();
+    activeCallUnsub = onSnapshot(callDocRef(groupId), (snap) => {
+      handleCallDocChange(groupId, snap.exists() ? snap.data() : null);
+    });
 
     // Nothing removes us from `participants` if we just close the tab or
     // lose network without clicking End Call, so keep refreshing a
@@ -2338,7 +2361,7 @@
     const pc = new RTCPeerConnection(RTC_CONFIG);
     peerConnections.set(otherUid, pc);
     localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
-    pc.ontrack = (e) => { ensureRemoteVideoTile(otherUid, otherName).srcObject = e.streams[0]; };
+    pc.ontrack = (e) => { attachStream(ensureRemoteVideoTile(otherUid, otherName), e.streams[0]); };
     watchIceConnectionState(pc, otherUid);
     const key = `${currentUser.uid}_${otherUid}`;
     pc.onicecandidate = (e) => {
@@ -2363,7 +2386,7 @@
     const pc = new RTCPeerConnection(RTC_CONFIG);
     peerConnections.set(otherUid, pc);
     localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
-    pc.ontrack = (e) => { ensureRemoteVideoTile(otherUid, otherName).srcObject = e.streams[0]; };
+    pc.ontrack = (e) => { attachStream(ensureRemoteVideoTile(otherUid, otherName), e.streams[0]); };
     watchIceConnectionState(pc, otherUid);
     const key = `${otherUid}_${currentUser.uid}`;
     pc.onicecandidate = (e) => {
