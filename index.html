@@ -945,8 +945,13 @@
      overridden here — with !important since the picture-in-picture tile size
      rule outranks a plain .video-tile:fullscreen selector otherwise. */
   .video-tile:fullscreen, .video-tile:-webkit-full-screen{
+    /* Some engines don't fully strip a grid/flex item's sizing when it
+       enters fullscreen, which left it stretched and shoved toward
+       whatever edge its grid column happened to be on — pin position and
+       size explicitly instead of relying on that. */
+    position:fixed !important; inset:0 !important; margin:0 !important;
     max-height:none !important; aspect-ratio:auto !important;
-    width:100vw; height:100vh; background:#000;
+    width:100vw !important; height:100vh !important; background:#000;
     display:flex; align-items:center; justify-content:center;
   }
   .video-tile:fullscreen video, .video-tile:-webkit-full-screen video{
@@ -2630,8 +2635,13 @@
     const overlay = $("callOverlay");
     const goingPip = !overlay.classList.contains("pip");
     overlay.classList.toggle("pip", goingPip);
+    // A previous drag/resize left inline left/top/width on the overlay —
+    // clear it going either direction, since expanding back to full screen
+    // must not inherit a stray shrunk-box position/size, and shrinking
+    // again should start clean at the last chosen corner.
+    clearPipInlinePosition();
+    overlay.style.width = "";
     if(goingPip){
-      clearPipInlinePosition();
       overlay.classList.add(`corner-${callPipCorner}`);
     }
     $("pipToggleBtn").textContent = goingPip ? "🗖" : "🗗";
