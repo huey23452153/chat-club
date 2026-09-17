@@ -810,6 +810,40 @@
     overflow-y: auto;
   }
   .call-overlay.show{ display:flex; }
+
+  /* Picture-in-picture: shrink the call into a corner so the rest of the
+     app (chat list, messages) stays usable while a call is going. Only
+     the box itself is positioned/sized here — everything outside it is
+     untouched by the overlay, so clicks reach the app underneath with no
+     extra pointer-events wiring needed. */
+  .call-overlay.pip{
+    inset: auto; width: 230px; padding: 10px; border-radius: 16px;
+    box-shadow: 0 12px 30px -8px rgba(0,0,0,0.55); overflow: visible;
+    align-items: stretch; justify-content: flex-start;
+  }
+  .call-overlay.pip.corner-tl{ top:16px; left:16px; }
+  .call-overlay.pip.corner-tr{ top:16px; right:16px; }
+  .call-overlay.pip.corner-bl{ bottom:16px; left:16px; }
+  .call-overlay.pip.corner-br{ bottom:16px; right:16px; }
+  .call-overlay.pip .call-videos-grid{
+    max-width:100%; max-height:160px; grid-template-columns: repeat(auto-fit, minmax(65px,1fr)); gap:6px;
+  }
+  .call-overlay.pip .video-tile{ max-height:90px; border-radius:8px; }
+  .call-overlay.pip .video-tile-name{ font-size:9px; padding:2px 6px; }
+  .call-overlay.pip .call-status{ font-size:11px; margin:6px 0; }
+  .call-overlay.pip .call-controls{ gap:8px; }
+  .call-overlay.pip .call-control-btn{ width:34px; height:34px; font-size:14px; }
+  @media (max-width:480px){ .call-overlay.pip{ width:170px; } }
+
+  .call-pip-bar{ display:flex; align-items:center; justify-content:flex-end; gap:6px; width:100%; max-width:820px; flex-shrink:0; margin-bottom:6px; }
+  .call-pip-corners{ display:none; gap:4px; }
+  .call-overlay.pip .call-pip-corners{ display:flex; }
+  .pip-corner-btn, .pip-toggle-btn{
+    width:28px; height:28px; border-radius:8px; border:none;
+    background: rgba(255,255,255,0.15); color:white; font-size:13px;
+    display:flex; align-items:center; justify-content:center;
+  }
+  .pip-toggle-btn.active{ background: var(--teal); }
   /* Up to 4 tiles (self + 3 others): a responsive grid rather than the
      fixed self-in-corner layout a strictly 1:1 call would use. */
   .call-videos-grid{
@@ -881,6 +915,15 @@
   </div>
 </div>
 <div class="call-overlay" id="callOverlay">
+  <div class="call-pip-bar">
+    <div class="call-pip-corners" id="callPipCorners">
+      <button class="pip-corner-btn" data-corner="tl" title="Move to top left">↖</button>
+      <button class="pip-corner-btn" data-corner="tr" title="Move to top right">↗</button>
+      <button class="pip-corner-btn" data-corner="bl" title="Move to bottom left">↙</button>
+      <button class="pip-corner-btn" data-corner="br" title="Move to bottom right">↘</button>
+    </div>
+    <button class="pip-toggle-btn" id="pipToggleBtn" title="Shrink call so you can use the app">🗗</button>
+  </div>
   <div class="call-status" id="callStatusText">Calling...</div>
   <div class="call-videos-grid" id="callVideosGrid"></div>
   <div class="call-controls">
@@ -1270,6 +1313,7 @@
   const CALL_HEARTBEAT_MS = 8000;
   const CALL_STALE_MS = 25000; // no heartbeat in this long = treat as gone
   const MAX_CALL_PARTICIPANTS = 4; // mesh calling (no media server) tops out here
+  let callPipCorner = "tr"; // remembered across calls so re-shrinking lands where you left it
 
   // =========================================================================
   //  DOM SHORTCUTS
@@ -2231,9 +2275,32 @@
     $("callOverlay").classList.add("show");
   }
   function hideCallOverlay(){
-    $("callOverlay").classList.remove("show");
+    // Every call starts full-screen (so an incoming ring is impossible to
+    // miss) even if a previous call was left shrunk into a corner.
+    $("callOverlay").classList.remove("show", "pip", "corner-tl", "corner-tr", "corner-bl", "corner-br");
     $("callVideosGrid").innerHTML = "";
+    $("pipToggleBtn").textContent = "🗗";
+    $("pipToggleBtn").classList.remove("active");
+    $("pipToggleBtn").title = "Shrink call so you can use the app";
   }
+
+  $("pipToggleBtn").addEventListener("click", () => {
+    const overlay = $("callOverlay");
+    const goingPip = !overlay.classList.contains("pip");
+    overlay.classList.toggle("pip", goingPip);
+    if(goingPip) overlay.classList.add(`corner-${callPipCorner}`);
+    $("pipToggleBtn").textContent = goingPip ? "🗖" : "🗗";
+    $("pipToggleBtn").classList.toggle("active", goingPip);
+    $("pipToggleBtn").title = goingPip ? "Expand call back to full screen" : "Shrink call so you can use the app";
+  });
+
+  $("callPipCorners").querySelectorAll(".pip-corner-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      callPipCorner = btn.dataset.corner;
+      $("callOverlay").classList.remove("corner-tl", "corner-tr", "corner-bl", "corner-br");
+      $("callOverlay").classList.add(`corner-${callPipCorner}`);
+    });
+  });
 
   function showIncomingBanner(groupId, participants){
     pendingCallGroupId = groupId;
