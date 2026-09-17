@@ -25,8 +25,9 @@ service cloud.firestore {
           && request.resource.data.senderId == request.auth.uid;
         allow update: if isSignedIn() && request.auth.uid in parentGroup().memberIds && (
           resource.data.senderId == request.auth.uid ||
-          request.resource.data.diff(resource.data).affectedKeys().hasOnly(["reactions"])
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(["reactions", "poll"])
         );
+        allow delete: if isSignedIn() && resource.data.senderId == request.auth.uid;
       }
 
       match /typing/{uid} {

@@ -120,6 +120,11 @@
     transition: border-color .15s ease;
   }
   .field input:focus{ border-color: var(--teal); }
+  .poll-option-row input{
+    flex:1; padding: 10px 12px; border-radius: var(--radius-sm);
+    border: 2px solid var(--line); outline:none; background: #FCFEFE;
+  }
+  .poll-option-row input:focus{ border-color: var(--teal); }
   .big-btn{
     width:100%;
     padding: 13px 16px;
@@ -432,6 +437,23 @@
     object-fit:cover; cursor:pointer;
   }
   .bubble img.msg-image + .msg-text{ margin-top:6px; }
+
+  .poll-option-row{ display:flex; gap:8px; margin-bottom:8px; align-items:center; }
+  .poll-option-remove{ background:none; border:none; color: var(--ink-soft); font-size:16px; flex-shrink:0; }
+
+  .poll-question{ font-weight:800; margin-bottom:8px; }
+  .poll-option{
+    position:relative; display:block; width:100%; text-align:left;
+    border:none; border-radius:10px; padding:8px 10px; margin-bottom:6px;
+    background: rgba(0,0,0,0.06); overflow:hidden; cursor:pointer; font-size:13.5px;
+  }
+  .poll-option-fill{
+    position:absolute; inset:0; background: rgba(29,120,116,0.18); z-index:0;
+    transition: width .2s ease;
+  }
+  .poll-option.mine .poll-option-fill{ background: rgba(29,120,116,0.35); }
+  .poll-option-label{ position:relative; z-index:1; display:flex; justify-content:space-between; gap:8px; }
+  .poll-total{ font-size:11px; color: var(--ink-soft); margin-top:2px; }
   .seen-indicator{
     font-size:11px; color: var(--ink-soft); text-align:right;
     padding: 2px 20px 0; min-height: 14px;
@@ -1084,6 +1106,7 @@
           <div class="composer">
             <input type="file" id="photoInput" accept="image/*" style="display:none;">
             <button class="attach-btn" id="attachPhotoBtn" title="Attach a photo">📷</button>
+            <button class="attach-btn" id="openPollBtn" title="Create a poll">📊</button>
             <textarea id="messageInput" rows="1" maxlength="500" placeholder="Type a friendly message..."></textarea>
             <button class="send-btn" id="sendBtn">
               <span class="cooldown-ring"></span>
@@ -1145,6 +1168,24 @@
     <div class="modal-actions">
       <button class="big-btn secondary" data-close="addPersonModal">Close</button>
       <button class="big-btn" id="confirmAddPersonBtn">Add to chat</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="pollModal">
+  <div class="modal">
+    <h3>Create a poll</h3>
+    <p class="modal-sub">Everyone in the chat can vote for one option.</p>
+    <div class="modal-msg" id="pollMsg"></div>
+    <div class="field">
+      <label for="pollQuestion">Question</label>
+      <input id="pollQuestion" type="text" placeholder="e.g. Pizza or tacos?" maxlength="120" />
+    </div>
+    <div id="pollOptionsList"></div>
+    <button class="big-btn secondary" id="addPollOptionBtn" style="margin-bottom:14px;">+ Add option</button>
+    <div class="modal-actions">
+      <button class="big-btn secondary" data-close="pollModal">Cancel</button>
+      <button class="big-btn" id="createPollBtn">Create poll</button>
     </div>
   </div>
 </div>
@@ -1835,6 +1876,7 @@
           <div class="msg-edit-box">
             <textarea class="edit-textarea" id="editTextarea-${m.id}" maxlength="500">${escapeHtml(m.text)}</textarea>
             <div class="edit-actions">
+              <button class="edit-btn delete" data-action="delete" data-id="${m.id}">Delete</button>
               <button class="edit-btn cancel" data-action="cancel" data-id="${m.id}">Cancel</button>
               <button class="edit-btn save" data-action="save" data-id="${m.id}">Save</button>
             </div>
@@ -1860,7 +1902,8 @@
           ? `<img class="msg-image" src="${m.imageData}" alt="Shared photo">`
           : "";
         const textHtml = m.text ? `<div class="msg-text">${escapeHtml(m.text)}</div>` : "";
-        const bubbleInner = replyQuoteHtml + imageHtml + textHtml;
+        const pollHtml = m.poll ? renderPoll(m.id, m.poll) : "";
+        const bubbleInner = replyQuoteHtml + imageHtml + textHtml + pollHtml;
 
         row.innerHTML = `
           ${mine ? "" : `<div class="msg-sender">${escapeHtml(m.senderName || "Friend")}</div>`}
@@ -1930,6 +1973,20 @@
 
     if(btn.dataset.action === "cancel"){
       editingMessageId = null;
+      renderMessages(lastRenderedMessages);
+    }
+
+    if(btn.dataset.action === "poll-vote"){
+      const optionIndex = Number(btn.dataset.option);
+      updateDoc(doc(db, "groups", activeGroupId, "messages", id), {
+        [`poll.votes.${currentUser.uid}`]: optionIndex
+      }).catch(() => {});
+      return;
+    }
+
+    if(btn.dataset.action === "delete"){
+      editingMessageId = null;
+      deleteDoc(doc(db, "groups", activeGroupId, "messages", id)).catch(() => {});
       renderMessages(lastRenderedMessages);
     }
 
@@ -2011,6 +2068,31 @@
   // rejected outright rather than ever reaching an src="...".
   function isValidImageDataUrl(str){
     return typeof str === "string" && /^data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+$/.test(str);
+  }
+
+  function renderPoll(messageId, poll){
+    const votes = poll.votes || {};
+    const counts = (poll.options || []).map((_, i) =>
+      Object.values(votes).filter(v => v === i).length
+    );
+    const total = counts.reduce((a, b) => a + b, 0);
+    const myVote = votes[currentUser.uid];
+    const optionsHtml = (poll.options || []).map((opt, i) => {
+      const count = counts[i];
+      const pct = total > 0 ? Math.round((count / total) * 100) : 0;
+      const mine = myVote === i;
+      return `
+        <button class="poll-option${mine ? " mine" : ""}" data-action="poll-vote" data-id="${messageId}" data-option="${i}">
+          <span class="poll-option-fill" style="width:${pct}%"></span>
+          <span class="poll-option-label"><span>${mine ? "✓ " : ""}${escapeHtml(opt)}</span><span>${count}</span></span>
+        </button>`;
+    }).join("");
+    return `
+      <div class="poll">
+        <div class="poll-question">📊 ${escapeHtml(poll.question)}</div>
+        ${optionsHtml}
+        <div class="poll-total">${total} vote${total === 1 ? "" : "s"}</div>
+      </div>`;
   }
 
   // =========================================================================
@@ -2904,6 +2986,59 @@
   });
   document.querySelectorAll(".modal-backdrop").forEach(bd => {
     bd.addEventListener("click", (e) => { if(e.target === bd) bd.classList.remove("show"); });
+  });
+
+  // =========================================================================
+  //  POLLS
+  // =========================================================================
+  const MAX_POLL_OPTIONS = 6;
+
+  function addPollOptionRow(value){
+    const row = document.createElement("div");
+    row.className = "poll-option-row";
+    row.innerHTML = `<input type="text" maxlength="60" placeholder="Option" value="${escapeHtml(value || "")}">
+      <button class="poll-option-remove" title="Remove option">✕</button>`;
+    row.querySelector(".poll-option-remove").addEventListener("click", () => {
+      if($("pollOptionsList").children.length > 2) row.remove();
+    });
+    $("pollOptionsList").appendChild(row);
+  }
+
+  $("openPollBtn").addEventListener("click", () => {
+    $("pollQuestion").value = "";
+    $("pollOptionsList").innerHTML = "";
+    addPollOptionRow(""); addPollOptionRow("");
+    $("pollMsg").classList.remove("show");
+    openModal("pollModal");
+  });
+  $("addPollOptionBtn").addEventListener("click", () => {
+    if($("pollOptionsList").children.length < MAX_POLL_OPTIONS) addPollOptionRow("");
+  });
+
+  $("createPollBtn").addEventListener("click", async () => {
+    const question = $("pollQuestion").value.trim();
+    const options = Array.from($("pollOptionsList").querySelectorAll("input"))
+      .map(i => i.value.trim()).filter(Boolean);
+    if(!question || options.length < 2){
+      $("pollMsg").textContent = "Add a question and at least 2 options.";
+      $("pollMsg").classList.add("show");
+      return;
+    }
+    if(!activeGroupId) return;
+    try{
+      await addDoc(collection(db, "groups", activeGroupId, "messages"), {
+        text: "",
+        poll: { question: question.slice(0, 120), options: options.slice(0, MAX_POLL_OPTIONS), votes: {} },
+        senderId: currentUser.uid,
+        senderName: currentUser.displayName,
+        createdAt: serverTimestamp()
+      });
+      await updateDoc(doc(db, "groups", activeGroupId), { updatedAt: serverTimestamp() });
+      closeModal("pollModal");
+    } catch(err){
+      $("pollMsg").textContent = "Couldn't create the poll — please try again.";
+      $("pollMsg").classList.add("show");
+    }
   });
 
   // =========================================================================
