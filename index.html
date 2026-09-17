@@ -892,6 +892,10 @@
   }
   .call-control-btn.end{ background: var(--coral); }
   .call-control-btn.muted{ background: rgba(255,255,255,0.35); }
+  .call-control-btn.active{ background: var(--teal); }
+  /* Mirroring makes sense for a camera (like looking in a mirror) but not
+     for shared screen content, which would render its text backwards. */
+  .video-tile.local-video.sharing-screen video{ transform:none; }
 
   /* ---------- Responsive: school Chromebooks / tablets / phones ---------- */
   @media (max-width: 780px){
@@ -929,6 +933,7 @@
   <div class="call-controls">
     <button class="call-control-btn" id="toggleMicBtn" title="Mute mic">🎤</button>
     <button class="call-control-btn" id="toggleCamBtn" title="Toggle camera">📷</button>
+    <button class="call-control-btn" id="toggleScreenBtn" title="Share screen">🖥️</button>
     <button class="call-control-btn end" id="endCallBtn" title="End call">📞</button>
   </div>
 </div>
@@ -1314,6 +1319,8 @@
   const CALL_STALE_MS = 25000; // no heartbeat in this long = treat as gone
   const MAX_CALL_PARTICIPANTS = 4; // mesh calling (no media server) tops out here
   let callPipCorner = "tr"; // remembered across calls so re-shrinking lands where you left it
+  let screenStream = null;  // set only while actively sharing your screen
+  let isSharingScreen = false;
 
   // =========================================================================
   //  DOM SHORTCUTS
@@ -2212,6 +2219,54 @@
     attachStream(vid, localStream);
   }
 
+  function currentVideoTrack(){
+    return isSharingScreen ? screenStream.getVideoTracks()[0] : localStream.getVideoTracks()[0];
+  }
+
+  async function toggleScreenShare(){
+    if(isSharingScreen){ stopScreenShare(); return; }
+
+    let stream;
+    try{
+      stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+    } catch(err){
+      return; // user cancelled the browser's share picker — nothing to do
+    }
+    screenStream = stream;
+    isSharingScreen = true;
+    const screenTrack = screenStream.getVideoTracks()[0];
+    // The browser's own "Stop sharing" control (outside our UI entirely)
+    // ends the track directly — react to that the same as our own button.
+    screenTrack.onended = () => stopScreenShare();
+
+    for(const pc of peerConnections.values()){
+      const sender = pc.getSenders().find(s => s.track && s.track.kind === "video");
+      if(sender) sender.replaceTrack(screenTrack);
+    }
+    attachStream($("localVideo"), screenStream);
+    document.getElementById("tile-local").classList.add("sharing-screen");
+    $("toggleScreenBtn").classList.add("active");
+    $("toggleScreenBtn").title = "Stop sharing screen";
+  }
+
+  function stopScreenShare(){
+    if(!isSharingScreen) return;
+    isSharingScreen = false;
+    screenStream.getTracks().forEach(t => t.stop());
+    screenStream = null;
+
+    const cameraTrack = localStream && localStream.getVideoTracks()[0];
+    for(const pc of peerConnections.values()){
+      const sender = pc.getSenders().find(s => s.track && s.track.kind === "video");
+      if(sender && cameraTrack) sender.replaceTrack(cameraTrack);
+    }
+    if(localStream) attachStream($("localVideo"), localStream);
+    const tile = document.getElementById("tile-local");
+    if(tile) tile.classList.remove("sharing-screen");
+    $("toggleScreenBtn").classList.remove("active");
+    $("toggleScreenBtn").title = "Share screen";
+  }
+
   // The `autoplay` HTML attribute alone isn't reliable once a stream is
   // attached asynchronously well after the click that triggered it — some
   // browsers just leave the element paused on a black frame with no error.
@@ -2318,6 +2373,10 @@
   function cleanupCallState(){
     for(const uid of Array.from(peerConnections.keys())) closePeerConnection(uid);
     peerConnections.clear();
+    if(screenStream){ screenStream.getTracks().forEach(t => t.stop()); screenStream = null; }
+    isSharingScreen = false;
+    $("toggleScreenBtn").classList.remove("active");
+    $("toggleScreenBtn").title = "Share screen";
     if(localStream){ localStream.getTracks().forEach(t => t.stop()); localStream = null; }
     if(callHeartbeatInterval){ clearInterval(callHeartbeatInterval); callHeartbeatInterval = null; }
     if(activeCallUnsub){ activeCallUnsub(); activeCallUnsub = null; }
@@ -2457,7 +2516,11 @@
   async function createOfferTo(groupId, otherUid, otherName){
     const pc = new RTCPeerConnection(RTC_CONFIG);
     peerConnections.set(otherUid, pc);
-    localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+    pc.addTrack(localStream.getAudioTracks()[0], localStream);
+    // Send whatever's currently active (screen or camera) — a peer
+    // connection opened mid-share (e.g. someone new joining the call)
+    // should start with the shared screen, not the camera underneath it.
+    pc.addTrack(currentVideoTrack(), localStream);
     pc.ontrack = (e) => { attachStream(ensureRemoteVideoTile(otherUid, otherName), e.streams[0]); };
     watchIceConnectionState(pc, otherUid);
     const key = `${currentUser.uid}_${otherUid}`;
@@ -2482,7 +2545,8 @@
   async function answerOfferFrom(groupId, otherUid, otherName, peerData){
     const pc = new RTCPeerConnection(RTC_CONFIG);
     peerConnections.set(otherUid, pc);
-    localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+    pc.addTrack(localStream.getAudioTracks()[0], localStream);
+    pc.addTrack(currentVideoTrack(), localStream);
     pc.ontrack = (e) => { attachStream(ensureRemoteVideoTile(otherUid, otherName), e.streams[0]); };
     watchIceConnectionState(pc, otherUid);
     const key = `${otherUid}_${currentUser.uid}`;
@@ -2630,6 +2694,9 @@
     if(!track) return;
     track.enabled = !track.enabled;
     $("toggleCamBtn").classList.toggle("muted", !track.enabled);
+  });
+  $("toggleScreenBtn").addEventListener("click", () => {
+    toggleScreenShare().catch(()=>{});
   });
 
   // =========================================================================
