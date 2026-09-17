@@ -885,8 +885,33 @@
        can't grow tall enough to matter before the container clip even
        applies. */
     max-height: 280px;
+    cursor: pointer;
   }
   .video-tile video{ width:100%; height:100%; object-fit:cover; }
+  /* A little expand hint on hover so the click-to-fullscreen behavior is
+     discoverable rather than a hidden trick. */
+  .video-tile::after{
+    content:"⛶"; position:absolute; top:8px; right:8px; z-index:1;
+    width:26px; height:26px; border-radius:50%; background: rgba(0,0,0,0.5); color:white;
+    font-size:14px; display:flex; align-items:center; justify-content:center;
+    opacity:0; transition: opacity .15s ease; pointer-events:none;
+  }
+  .video-tile:hover::after{ opacity:1; }
+  /* Fullscreening the tile div itself (not just its <video>) keeps the name
+     label and connection-status overlay visible instead of losing them to a
+     bare native video player. The aspect-ratio/max-height that keep tiles
+     small in the grid would otherwise carry into fullscreen too (entering
+     fullscreen doesn't clear author CSS on its own), so those are explicitly
+     overridden here — with !important since the picture-in-picture tile size
+     rule outranks a plain .video-tile:fullscreen selector otherwise. */
+  .video-tile:fullscreen, .video-tile:-webkit-full-screen{
+    max-height:none !important; aspect-ratio:auto !important;
+    width:100vw; height:100vh; background:#000;
+    display:flex; align-items:center; justify-content:center;
+  }
+  .video-tile:fullscreen video, .video-tile:-webkit-full-screen video{
+    width:100%; height:100%; object-fit:contain;
+  }
   .video-tile.local-video video{
     transform: scaleX(-1); /* mirror the self-view, like a real mirror — the outgoing stream sent to others is unaffected */
   }
@@ -2851,6 +2876,22 @@
   });
   $("switchCameraBtn").addEventListener("click", () => {
     switchCamera().catch(()=>{});
+  });
+
+  // Click any tile (yours, someone else's camera, or a shared screen) to
+  // blow it up to real fullscreen; click it again (or press Escape, or use
+  // the browser's own fullscreen exit control) to shrink it back down.
+  $("callVideosGrid").addEventListener("click", (e) => {
+    const tile = e.target.closest(".video-tile");
+    if(!tile) return;
+    const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
+    if(fsEl === tile){
+      (document.exitFullscreen || document.webkitExitFullscreen)?.call(document);
+      return;
+    }
+    if(tile.requestFullscreen) tile.requestFullscreen().catch(()=>{});
+    else if(tile.webkitRequestFullscreen) tile.webkitRequestFullscreen();
+    else tile.querySelector("video")?.webkitEnterFullscreen?.(); // iOS Safari: only the <video> itself supports native fullscreen
   });
 
   // =========================================================================
