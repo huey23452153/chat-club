@@ -1221,11 +1221,22 @@
   // =========================================================================
   const SEND_COOLDOWN_MS = 3000; // how long someone must wait between messages
 
-  // Free public STUN only (no paid TURN server) — works fine on open wifi/mobile
-  // data, but can fail to connect on networks with strict firewalls.
+  // STUN alone only works when both sides' NAT/firewall allows a direct
+  // peer-to-peer route — that fails outright on stricter networks (common on
+  // school wifi, mobile data, symmetric NAT), which is exactly the "no direct
+  // route found" error. A TURN server relays the media instead of connecting
+  // peers directly, at the cost of needing a real server to run it — Open
+  // Relay Project's public shared TURN servers cover that for free (shared/
+  // rate-limited, no signup) as a fallback that only gets used when a direct
+  // route genuinely isn't possible.
   const RTC_CONFIG = { iceServers: [
     { urls: "stun:stun.l.google.com:19302" },
-    { urls: "stun:stun1.l.google.com:19302" }
+    { urls: "stun:stun1.l.google.com:19302" },
+    { urls: "stun:stun.relay.metered.ca:80" },
+    { urls: "turn:global.relay.metered.ca:80", username: "openrelayproject", credential: "openrelayproject" },
+    { urls: "turn:global.relay.metered.ca:80?transport=tcp", username: "openrelayproject", credential: "openrelayproject" },
+    { urls: "turn:global.relay.metered.ca:443", username: "openrelayproject", credential: "openrelayproject" },
+    { urls: "turns:global.relay.metered.ca:443?transport=tcp", username: "openrelayproject", credential: "openrelayproject" }
   ] };
 
   const AVATAR_COLORS = [
