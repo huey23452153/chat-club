@@ -2465,12 +2465,20 @@
   // (front + back) — most laptops/desktops have exactly one, where this
   // button would just fail silently every time.
   async function updateSwitchCameraVisibility(){
+    // enumerateDevices() is flaky about when/whether it reports a second
+    // camera — timing-dependent on some browsers, sometimes undercounting
+    // right after permission is granted. A touchscreen is a reliable enough
+    // signal on its own (virtually every phone/tablet has front+back
+    // cameras), so trust that even when device enumeration says otherwise —
+    // switchCamera() already no-ops quietly if there's genuinely no second
+    // camera to switch to.
+    const isTouchDevice = navigator.maxTouchPoints > 0;
     try{
       const devices = await navigator.mediaDevices.enumerateDevices();
       const cams = devices.filter(d => d.kind === "videoinput");
-      $("switchCameraBtn").style.display = cams.length > 1 ? "flex" : "none";
+      $("switchCameraBtn").style.display = (cams.length > 1 || isTouchDevice) ? "flex" : "none";
     } catch(err){
-      $("switchCameraBtn").style.display = "none";
+      $("switchCameraBtn").style.display = isTouchDevice ? "flex" : "none";
     }
   }
 
