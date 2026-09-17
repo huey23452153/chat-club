@@ -409,6 +409,29 @@
     text-align:center; padding: 0 18px 8px; display:none;
   }
   .composer-hint.show{ display:block; animation: list-item-in .2s ease; }
+  .attach-btn{
+    background: var(--bubble-them); color: var(--ink); border:none;
+    width: 46px; height: 46px; border-radius: 50%;
+    display:flex; align-items:center; justify-content:center;
+    font-size:19px; flex-shrink:0;
+  }
+  .image-preview-strip{
+    display:none; align-items:center; gap:10px;
+    padding: 10px 18px 0;
+  }
+  .image-preview-strip.show{ display:flex; }
+  .image-preview-strip img{
+    width:56px; height:56px; object-fit:cover; border-radius:10px; border:1px solid var(--line);
+  }
+  .image-preview-remove{
+    background: var(--bubble-them); color: var(--ink); border:none;
+    width:26px; height:26px; border-radius:50%; font-size:13px; font-weight:700;
+  }
+  .bubble img.msg-image{
+    display:block; max-width: min(240px, 60vw); max-height:240px; border-radius:12px;
+    object-fit:cover; cursor:pointer;
+  }
+  .bubble img.msg-image + .msg-text{ margin-top:6px; }
   .seen-indicator{
     font-size:11px; color: var(--ink-soft); text-align:right;
     padding: 2px 20px 0; min-height: 14px;
@@ -893,9 +916,10 @@
   .call-control-btn.end{ background: var(--coral); }
   .call-control-btn.muted{ background: rgba(255,255,255,0.35); }
   .call-control-btn.active{ background: var(--teal); }
-  /* Mirroring makes sense for a camera (like looking in a mirror) but not
-     for shared screen content, which would render its text backwards. */
-  .video-tile.local-video.sharing-screen video{ transform:none; }
+  /* Mirroring makes sense for a front camera (like looking in a mirror) but
+     not for shared screen content or a rear/back camera. */
+  .video-tile.local-video.sharing-screen video,
+  .video-tile.local-video.back-camera video{ transform:none; }
 
   /* ---------- Responsive: school Chromebooks / tablets / phones ---------- */
   @media (max-width: 780px){
@@ -933,6 +957,7 @@
   <div class="call-controls">
     <button class="call-control-btn" id="toggleMicBtn" title="Mute mic">🎤</button>
     <button class="call-control-btn" id="toggleCamBtn" title="Toggle camera">📷</button>
+    <button class="call-control-btn" id="switchCameraBtn" title="Switch camera" style="display:none;">🔄</button>
     <button class="call-control-btn" id="toggleScreenBtn" title="Share screen">🖥️</button>
     <button class="call-control-btn end" id="endCallBtn" title="End call">📞</button>
   </div>
@@ -1027,7 +1052,13 @@
             <button class="reply-preview-cancel" id="cancelReplyBtn">✕</button>
           </div>
           <div class="composer-hint" id="composerHint">Slow down a little — wait a moment before sending another message 🙂</div>
+          <div class="image-preview-strip" id="imagePreviewStrip">
+            <img id="imagePreviewThumb" alt="">
+            <button class="image-preview-remove" id="removeImagePreviewBtn" title="Remove photo">✕</button>
+          </div>
           <div class="composer">
+            <input type="file" id="photoInput" accept="image/*" style="display:none;">
+            <button class="attach-btn" id="attachPhotoBtn" title="Attach a photo">📷</button>
             <textarea id="messageInput" rows="1" maxlength="500" placeholder="Type a friendly message..."></textarea>
             <button class="send-btn" id="sendBtn">
               <span class="cooldown-ring"></span>
@@ -1321,6 +1352,7 @@
   let callPipCorner = "tr"; // remembered across calls so re-shrinking lands where you left it
   let screenStream = null;  // set only while actively sharing your screen
   let isSharingScreen = false;
+  let currentFacingMode = "user"; // "user" (front) or "environment" (back)
 
   // =========================================================================
   //  DOM SHORTCUTS
@@ -1788,7 +1820,11 @@
         const replyQuoteHtml = m.replyTo
           ? `<div class="reply-quote">↩️ ${escapeHtml(m.replyTo.senderName)}: ${escapeHtml(m.replyTo.text)}</div>`
           : "";
-        const bubbleInner = replyQuoteHtml + escapeHtml(m.text);
+        const imageHtml = isValidImageDataUrl(m.imageData)
+          ? `<img class="msg-image" src="${m.imageData}" alt="Shared photo">`
+          : "";
+        const textHtml = m.text ? `<div class="msg-text">${escapeHtml(m.text)}</div>` : "";
+        const bubbleInner = replyQuoteHtml + imageHtml + textHtml;
 
         row.innerHTML = `
           ${mine ? "" : `<div class="msg-sender">${escapeHtml(m.senderName || "Friend")}</div>`}
@@ -1928,6 +1964,17 @@
     const d = document.createElement("div");
     d.textContent = str ?? "";
     return d.innerHTML;
+  }
+
+  // escapeHtml only guarantees safety for text-node content, not for a value
+  // dropped into an HTML attribute — a message document (imageData included)
+  // is attacker-controllable by anyone in the group, not just our own
+  // canvas.toDataURL() output, so a strict format check stands in for
+  // attribute escaping here: anything that isn't genuinely a base64 image
+  // data URL (no quotes/angle-brackets possible in that alphabet) is
+  // rejected outright rather than ever reaching an src="...".
+  function isValidImageDataUrl(str){
+    return typeof str === "string" && /^data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+$/.test(str);
   }
 
   // =========================================================================
@@ -2117,6 +2164,8 @@
   //  SEND MESSAGE + SPAM COOLDOWN
   // =========================================================================
   const messageInput = $("messageInput"), sendBtn = $("sendBtn"), composerHint = $("composerHint");
+  let pendingImageDataUrl = null;
+  const MAX_IMAGE_DIMENSION = 1000; // keeps the base64 doc field well under Firestore's 1MB doc limit
 
   messageInput.addEventListener("input", () => {
     messageInput.style.height = "auto";
@@ -2129,9 +2178,55 @@
   });
   sendBtn.addEventListener("click", trySendMessage);
 
+  // Photos are stored inline as compressed base64 data URLs on the message
+  // document itself — there's no Firebase Storage bucket set up for this
+  // project, and this keeps everything on the same free Firestore-only
+  // setup the rest of the app already relies on.
+  function compressImageToDataUrl(file){
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      const objectUrl = URL.createObjectURL(file);
+      img.onload = () => {
+        URL.revokeObjectURL(objectUrl);
+        let { width, height } = img;
+        const scale = Math.min(1, MAX_IMAGE_DIMENSION / Math.max(width, height));
+        width = Math.round(width * scale) || 1;
+        height = Math.round(height * scale) || 1;
+        const canvas = document.createElement("canvas");
+        canvas.width = width; canvas.height = height;
+        canvas.getContext("2d").drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL("image/jpeg", 0.65));
+      };
+      img.onerror = () => reject(new Error("Couldn't read that image"));
+      img.src = objectUrl;
+    });
+  }
+
+  function clearPendingImage(){
+    pendingImageDataUrl = null;
+    $("imagePreviewStrip").classList.remove("show");
+    $("imagePreviewThumb").src = "";
+  }
+
+  $("attachPhotoBtn").addEventListener("click", () => $("photoInput").click());
+  $("photoInput").addEventListener("change", async () => {
+    const file = $("photoInput").files[0];
+    $("photoInput").value = ""; // lets the same file be picked again later
+    if(!file) return;
+    try{
+      pendingImageDataUrl = await compressImageToDataUrl(file);
+    } catch(err){
+      return;
+    }
+    $("imagePreviewThumb").src = pendingImageDataUrl;
+    $("imagePreviewStrip").classList.add("show");
+  });
+  $("removeImagePreviewBtn").addEventListener("click", clearPendingImage);
+
   async function trySendMessage(){
     const text = messageInput.value.trim();
-    if(!text || !activeGroupId) return;
+    const imageDataUrl = pendingImageDataUrl;
+    if((!text && !imageDataUrl) || !activeGroupId) return;
 
     const sinceLast = Date.now() - lastSentAt;
     if(sinceLast < SEND_COOLDOWN_MS){
@@ -2143,6 +2238,7 @@
     lastSentAt = Date.now();
     messageInput.value = "";
     messageInput.style.height = "auto";
+    clearPendingImage();
     stopTyping();
     startCooldownVisual();
     sendBtn.classList.add("just-sent");
@@ -2154,11 +2250,12 @@
 
     try{
       const payload = {
-        text: applyWordSwaps(text.slice(0, 500)),
+        text: text ? applyWordSwaps(text.slice(0, 500)) : "",
         senderId: currentUser.uid,
         senderName: currentUser.displayName,
         createdAt: serverTimestamp()
       };
+      if(imageDataUrl) payload.imageData = imageDataUrl;
       if(replySnapshot){
         payload.replyTo = {
           id: replySnapshot.id,
@@ -2217,6 +2314,47 @@
       $("callVideosGrid").appendChild(tile);
     }
     attachStream(vid, localStream);
+    currentFacingMode = "user";
+    document.getElementById("tile-local").classList.remove("back-camera");
+    updateSwitchCameraVisibility();
+  }
+
+  // Only worth showing on a device that actually has more than one camera
+  // (front + back) — most laptops/desktops have exactly one, where this
+  // button would just fail silently every time.
+  async function updateSwitchCameraVisibility(){
+    try{
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const cams = devices.filter(d => d.kind === "videoinput");
+      $("switchCameraBtn").style.display = cams.length > 1 ? "flex" : "none";
+    } catch(err){
+      $("switchCameraBtn").style.display = "none";
+    }
+  }
+
+  async function switchCamera(){
+    if(isSharingScreen || !localStream) return;
+    const nextFacing = currentFacingMode === "user" ? "environment" : "user";
+    let newStream;
+    try{
+      newStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: nextFacing }, audio: false });
+    } catch(err){
+      return; // device doesn't actually have a second camera to switch to
+    }
+    const newTrack = newStream.getVideoTracks()[0];
+    const oldTrack = localStream.getVideoTracks()[0];
+    newTrack.enabled = oldTrack.enabled; // preserve a muted camera across the switch
+    localStream.removeTrack(oldTrack);
+    oldTrack.stop();
+    localStream.addTrack(newTrack);
+    currentFacingMode = nextFacing;
+
+    for(const pc of peerConnections.values()){
+      const sender = pc.getSenders().find(s => s.track && s.track.kind === "video");
+      if(sender) sender.replaceTrack(newTrack);
+    }
+    attachStream($("localVideo"), localStream);
+    document.getElementById("tile-local").classList.toggle("back-camera", nextFacing === "environment");
   }
 
   function currentVideoTrack(){
@@ -2377,6 +2515,8 @@
     isSharingScreen = false;
     $("toggleScreenBtn").classList.remove("active");
     $("toggleScreenBtn").title = "Share screen";
+    $("switchCameraBtn").style.display = "none";
+    currentFacingMode = "user";
     if(localStream){ localStream.getTracks().forEach(t => t.stop()); localStream = null; }
     if(callHeartbeatInterval){ clearInterval(callHeartbeatInterval); callHeartbeatInterval = null; }
     if(activeCallUnsub){ activeCallUnsub(); activeCallUnsub = null; }
@@ -2697,6 +2837,9 @@
   });
   $("toggleScreenBtn").addEventListener("click", () => {
     toggleScreenShare().catch(()=>{});
+  });
+  $("switchCameraBtn").addEventListener("click", () => {
+    switchCamera().catch(()=>{});
   });
 
   // =========================================================================
