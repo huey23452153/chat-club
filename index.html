@@ -1052,6 +1052,50 @@
   .control-banner-actions .decline{ background:#FFF0EE; color:#B5482F; }
   .control-banner-actions button:disabled{ opacity:0.6; cursor:default; }
 
+  /* ---------- Shared whiteboard (in a call) ---------- */
+  .whiteboard{
+    display:none; flex-direction:column; gap:8px;
+    width:100%; max-width:1100px; flex:1 1 auto; min-height:0; margin-bottom:12px;
+  }
+  .call-overlay.wb-open .whiteboard{ display:flex; }
+  /* The board takes the room; videos shrink to a strip above it. */
+  .call-overlay.wb-open{ justify-content:flex-start; }
+  .call-overlay.wb-open .call-videos-grid{
+    max-height: 16vh; grid-template-columns: repeat(auto-fit, minmax(90px, 140px)); justify-content:center;
+  }
+  .call-overlay.wb-open .call-status{ margin:6px 0; }
+  .call-overlay.pip .whiteboard{ display:none; }
+  .wb-toolbar{
+    display:flex; flex-wrap:wrap; align-items:center; justify-content:center; gap:8px;
+    flex-shrink:0;
+  }
+  .wb-group{ display:flex; gap:6px; align-items:center; padding:4px 6px; border-radius:12px; background: rgba(255,255,255,0.1); }
+  .wb-color{
+    width:28px; height:28px; border-radius:50%; border:3px solid transparent; cursor:pointer; padding:0;
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.35);
+  }
+  .wb-color.selected{ border-color:white; transform: scale(1.12); }
+  .wb-tool{
+    border:none; border-radius:9px; padding:6px 10px; cursor:pointer;
+    background: rgba(255,255,255,0.15); color:white; font-weight:700; font-size:13px;
+    display:flex; align-items:center; gap:6px;
+  }
+  .wb-tool.selected{ background: var(--teal); }
+  .wb-tool:disabled{ opacity:0.45; cursor:default; }
+  .wb-tool.danger{ background:#B5482F; }
+  .wb-pen-dot{ display:inline-block; border-radius:50%; background:currentColor; }
+  .wb-stage{ flex:1 1 auto; min-height:0; display:flex; align-items:center; justify-content:center; }
+  .wb-canvas{
+    background:white; border-radius:12px; touch-action:none; cursor:crosshair;
+    box-shadow: 0 10px 30px -10px rgba(0,0,0,0.6); display:block;
+  }
+  /* "Someone drew something" dot on the board button while it's closed. */
+  .call-control-btn{ position:relative; }
+  .call-control-btn.has-news::after{
+    content:""; position:absolute; top:4px; right:4px; width:11px; height:11px; border-radius:50%;
+    background:#FFD166; box-shadow:0 0 0 2px rgba(10,20,20,0.9);
+  }
+
   /* ---------- Responsive: school Chromebooks / tablets / phones ---------- */
   @media (max-width: 780px){
     .sidebar{ width:100%; min-width:0; position:absolute; inset:0; z-index:5; }
@@ -1085,11 +1129,26 @@
   </div>
   <div class="call-status" id="callStatusText">Calling...</div>
   <div class="call-videos-grid" id="callVideosGrid"></div>
+  <div class="whiteboard" id="whiteboard">
+    <div class="wb-toolbar">
+      <div class="wb-group" id="wbColors"></div>
+      <div class="wb-group">
+        <button class="wb-tool selected" data-size="thin" title="Thin pen"><span class="wb-pen-dot" style="width:4px;height:4px"></span>Thin</button>
+        <button class="wb-tool" data-size="thick" title="Thick pen"><span class="wb-pen-dot" style="width:10px;height:10px"></span>Thick</button>
+      </div>
+      <div class="wb-group">
+        <button class="wb-tool" id="wbUndoBtn" title="Undo your last line" disabled>↶ Undo</button>
+        <button class="wb-tool danger" id="wbClearBtn" title="Clear the board for everyone">🗑 Clear</button>
+      </div>
+    </div>
+    <div class="wb-stage" id="wbStage"><canvas class="wb-canvas" id="wbCanvas"></canvas></div>
+  </div>
   <div class="call-controls">
     <button class="call-control-btn" id="toggleMicBtn" title="Mute mic">🎤</button>
     <button class="call-control-btn" id="toggleCamBtn" title="Toggle camera">📷</button>
     <button class="call-control-btn" id="switchCameraBtn" title="Switch camera" style="display:none;">🔄</button>
     <button class="call-control-btn" id="toggleScreenBtn" title="Share screen">🖥️</button>
+    <button class="call-control-btn" id="whiteboardBtn" title="Open whiteboard">🎨</button>
     <button class="call-control-btn end" id="endCallBtn" title="End call">📞</button>
   </div>
   <div class="pip-resize-handle" id="pipResizeHandle" title="Drag to resize">⤡</div>
@@ -2940,6 +2999,7 @@
     peerConnections.clear();
     endBeingControlled(false);
     hideControlBanner();
+    resetWhiteboard();
     if(screenStream){ screenStream.getTracks().forEach(t => t.stop()); screenStream = null; }
     isSharingScreen = false;
     $("toggleScreenBtn").classList.remove("active");
@@ -3262,7 +3322,10 @@
 
   function setupControlChannel(uid, ch){
     controlChannels.set(uid, ch);
-    ch.onopen = () => sendControl(uid, { type: "sharing", on: isControllableShare() });
+    ch.onopen = () => {
+      sendControl(uid, { type: "sharing", on: isControllableShare() });
+      sendWhiteboardStateTo(uid); // catch a late joiner up on the board
+    };
     // On the answering side the channel arrives (via ondatachannel) already
     // open, so onopen never fires there — send the current state now, or a
     // share started before this peer connected would never be announced.
@@ -3270,7 +3333,9 @@
     ch.onmessage = (e) => {
       let msg;
       try{ msg = JSON.parse(e.data); } catch(err){ return; }
-      if(msg && typeof msg.type === "string") handleControlMessage(uid, msg);
+      if(!msg || typeof msg.type !== "string") return;
+      if(msg.type.startsWith("wb-")) handleWhiteboardMessage(uid, msg);
+      else handleControlMessage(uid, msg);
     };
     ch.onclose = () => { if(controlChannels.get(uid) === ch) cleanupControlFor(uid); };
   }
@@ -3656,6 +3721,297 @@
   $("switchCameraBtn").addEventListener("click", () => {
     switchCamera().catch(()=>{});
   });
+
+  // =========================================================================
+  //  SHARED WHITEBOARD
+  // =========================================================================
+  // A drawing board everyone in the call shares. Strokes travel peer-to-peer
+  // over the same "control" data channel as remote control (never through
+  // Firestore), as points normalized to 0..1 of the board, so they land in
+  // the same place on every screen size. The board has a fixed aspect ratio
+  // for the same reason.
+  //   wb-start {id, color, size, pt}   a new line begins
+  //   wb-points {id, pts}              more points for it (batched)
+  //   wb-undo {id}                     the sender removes one of their lines
+  //   wb-clear                         wipe the board for everyone
+  //   wb-stroke {id, owner, color, size, pts}  a whole line, sent to catch up
+  //                                    someone who just connected
+  // Everyone in the mesh talks to everyone directly, so nothing is relayed.
+
+  const WB_COLORS = ["#1E2A2A", "#E4572E", "#2F80ED", "#27AE60", "#F2C94C", "#9B51E0"];
+  const WB_SIZES = { thin: 0.004, thick: 0.014 }; // fraction of board width
+  const WB_ASPECT = 16 / 10;
+  const WB_MAX_STROKES = 3000;
+  const WB_MAX_POINTS = 5000; // per line
+  const wbStrokes = [];          // in draw order: {id, owner, color, size, pts:[[x,y],...]}
+  const wbById = new Map();
+  let wbMyStrokeIds = [];        // my own lines, newest last, for undo
+  let wbColor = WB_COLORS[0];
+  let wbSize = "thin";
+  let wbDrawing = null;          // the line I'm drawing right now
+  let wbPending = [];            // my points not sent yet
+  let wbFlushTimer = null;
+  let wbStrokeSeq = 0;
+  const wbCanvas = $("wbCanvas");
+  const wbCtx = wbCanvas.getContext("2d");
+
+  function broadcastWhiteboard(msg){
+    for(const uid of controlChannels.keys()) sendControl(uid, msg);
+  }
+
+  function isWhiteboardOpen(){ return $("callOverlay").classList.contains("wb-open"); }
+
+  // ---------- drawing ----------
+  function applyStrokeStyle(stroke){
+    wbCtx.strokeStyle = stroke.color;
+    wbCtx.fillStyle = stroke.color;
+    wbCtx.lineWidth = Math.max(1, WB_SIZES[stroke.size] * wbCanvas.width);
+    wbCtx.lineCap = "round"; wbCtx.lineJoin = "round";
+  }
+  function drawSegment(stroke, from, to){
+    const w = wbCanvas.width, h = wbCanvas.height;
+    applyStrokeStyle(stroke);
+    wbCtx.beginPath();
+    if(!from){ // a single dot
+      wbCtx.arc(to[0] * w, to[1] * h, wbCtx.lineWidth / 2, 0, Math.PI * 2);
+      wbCtx.fill();
+      return;
+    }
+    wbCtx.moveTo(from[0] * w, from[1] * h);
+    wbCtx.lineTo(to[0] * w, to[1] * h);
+    wbCtx.stroke();
+  }
+  function drawStroke(stroke){
+    const pts = stroke.pts;
+    if(pts.length === 1){ drawSegment(stroke, null, pts[0]); return; }
+    const w = wbCanvas.width, h = wbCanvas.height;
+    applyStrokeStyle(stroke);
+    wbCtx.beginPath();
+    wbCtx.moveTo(pts[0][0] * w, pts[0][1] * h);
+    for(let i = 1; i < pts.length; i++) wbCtx.lineTo(pts[i][0] * w, pts[i][1] * h);
+    wbCtx.stroke();
+  }
+  function redrawWhiteboard(){
+    wbCtx.clearRect(0, 0, wbCanvas.width, wbCanvas.height);
+    for(const s of wbStrokes) drawStroke(s);
+  }
+  // Fit the biggest fixed-aspect board into the space available, at the
+  // screen's real pixel density so lines stay crisp.
+  function sizeWhiteboard(){
+    if(!isWhiteboardOpen()) return;
+    const stage = $("wbStage");
+    const availW = stage.clientWidth, availH = stage.clientHeight;
+    if(!availW || !availH) return;
+    let cssW = availW, cssH = availW / WB_ASPECT;
+    if(cssH > availH){ cssH = availH; cssW = availH * WB_ASPECT; }
+    cssW = Math.floor(cssW); cssH = Math.floor(cssH);
+    const dpr = window.devicePixelRatio || 1;
+    wbCanvas.style.width = cssW + "px";
+    wbCanvas.style.height = cssH + "px";
+    const pxW = Math.round(cssW * dpr), pxH = Math.round(cssH * dpr);
+    if(wbCanvas.width !== pxW || wbCanvas.height !== pxH){
+      wbCanvas.width = pxW; wbCanvas.height = pxH;
+      redrawWhiteboard();
+    }
+  }
+  new ResizeObserver(() => sizeWhiteboard()).observe($("wbStage"));
+
+  // ---------- board contents ----------
+  function isValidPoint(p){
+    return Array.isArray(p) && p.length === 2 &&
+      Number.isFinite(p[0]) && Number.isFinite(p[1]) &&
+      p[0] >= 0 && p[0] <= 1 && p[1] >= 0 && p[1] <= 1;
+  }
+  function isValidStrokeStyle(msg){
+    return typeof msg.id === "string" && msg.id.length > 0 && msg.id.length <= 80 &&
+      WB_COLORS.includes(msg.color) && Object.hasOwn(WB_SIZES, msg.size);
+  }
+
+  function addStroke(stroke){
+    if(wbById.has(stroke.id) || wbStrokes.length >= WB_MAX_STROKES) return null;
+    wbStrokes.push(stroke);
+    wbById.set(stroke.id, stroke);
+    drawStroke(stroke);
+    return stroke;
+  }
+  function removeStroke(id){
+    const stroke = wbById.get(id);
+    if(!stroke) return;
+    wbById.delete(id);
+    wbStrokes.splice(wbStrokes.indexOf(stroke), 1);
+    if(wbDrawing === stroke) wbDrawing = null;
+    redrawWhiteboard();
+  }
+  function clearBoard(){
+    wbStrokes.length = 0;
+    wbById.clear();
+    wbMyStrokeIds = [];
+    wbDrawing = null;
+    wbPending = [];
+    redrawWhiteboard();
+    updateUndoButton();
+  }
+  function updateUndoButton(){ $("wbUndoBtn").disabled = wbMyStrokeIds.length === 0; }
+
+  // A little dot on the board button when someone draws while it's closed.
+  function markWhiteboardNews(){
+    if(!isWhiteboardOpen() || $("callOverlay").classList.contains("pip")) $("whiteboardBtn").classList.add("has-news");
+  }
+
+  function sendWhiteboardStateTo(uid){
+    for(const s of wbStrokes){
+      sendControl(uid, { type: "wb-stroke", id: s.id, owner: s.owner, color: s.color, size: s.size, pts: s.pts });
+    }
+  }
+
+  function handleWhiteboardMessage(uid, msg){
+    switch(msg.type){
+      case "wb-start":
+        if(!isValidStrokeStyle(msg) || !isValidPoint(msg.pt)) return;
+        if(addStroke({ id: msg.id, owner: uid, color: msg.color, size: msg.size, pts: [msg.pt] })) markWhiteboardNews();
+        break;
+      case "wb-points": {
+        const stroke = wbById.get(msg.id);
+        if(!stroke || stroke.owner !== uid || !Array.isArray(msg.pts)) return;
+        for(const p of msg.pts){
+          if(!isValidPoint(p) || stroke.pts.length >= WB_MAX_POINTS) break;
+          drawSegment(stroke, stroke.pts[stroke.pts.length - 1], p);
+          stroke.pts.push(p);
+        }
+        break;
+      }
+      case "wb-stroke":
+        if(!isValidStrokeStyle(msg) || !Array.isArray(msg.pts) || !msg.pts.length ||
+           msg.pts.length > WB_MAX_POINTS || !msg.pts.every(isValidPoint)) return;
+        if(addStroke({ id: msg.id, owner: typeof msg.owner === "string" ? msg.owner : uid,
+                       color: msg.color, size: msg.size, pts: msg.pts.slice() })) markWhiteboardNews();
+        break;
+      case "wb-undo": {
+        const stroke = wbById.get(msg.id);
+        if(stroke && stroke.owner === uid) removeStroke(msg.id);
+        break;
+      }
+      case "wb-clear":
+        if(wbStrokes.length) markWhiteboardNews();
+        clearBoard();
+        break;
+    }
+  }
+
+  // ---------- my own drawing ----------
+  function pointerToBoard(e){
+    const rect = wbCanvas.getBoundingClientRect();
+    const x = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+    const y = Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height));
+    return [Math.round(x * 10000) / 10000, Math.round(y * 10000) / 10000];
+  }
+  // Points go out in small batches on a timer (not every pointermove, and
+  // not tied to animation frames, which stall in background tabs).
+  function flushWhiteboardPoints(){
+    clearTimeout(wbFlushTimer); wbFlushTimer = null;
+    if(!wbDrawing || !wbPending.length) return;
+    broadcastWhiteboard({ type: "wb-points", id: wbDrawing.id, pts: wbPending });
+    wbPending = [];
+  }
+  wbCanvas.addEventListener("pointerdown", (e) => {
+    if(e.button !== 0 || !activeCallGroupId) return;
+    e.preventDefault();
+    wbCanvas.setPointerCapture(e.pointerId);
+    const pt = pointerToBoard(e);
+    const stroke = addStroke({
+      id: `${currentUser.uid}-${Date.now().toString(36)}-${++wbStrokeSeq}`,
+      owner: currentUser.uid, color: wbColor, size: wbSize, pts: [pt],
+    });
+    if(!stroke) return;
+    wbDrawing = stroke;
+    wbPending = [];
+    wbMyStrokeIds.push(stroke.id);
+    updateUndoButton();
+    broadcastWhiteboard({ type: "wb-start", id: stroke.id, color: stroke.color, size: stroke.size, pt });
+  });
+  wbCanvas.addEventListener("pointermove", (e) => {
+    if(!wbDrawing) return;
+    const coalesced = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
+    for(const ev of (coalesced.length ? coalesced : [e])){
+      if(wbDrawing.pts.length >= WB_MAX_POINTS) break;
+      const pt = pointerToBoard(ev);
+      const last = wbDrawing.pts[wbDrawing.pts.length - 1];
+      if(last[0] === pt[0] && last[1] === pt[1]) continue;
+      drawSegment(wbDrawing, last, pt);
+      wbDrawing.pts.push(pt);
+      wbPending.push(pt);
+    }
+    if(wbPending.length && !wbFlushTimer) wbFlushTimer = setTimeout(flushWhiteboardPoints, 40);
+  });
+  function endMyStroke(){
+    if(!wbDrawing) return;
+    flushWhiteboardPoints();
+    wbDrawing = null;
+  }
+  wbCanvas.addEventListener("pointerup", endMyStroke);
+  wbCanvas.addEventListener("pointercancel", endMyStroke);
+
+  // ---------- toolbar ----------
+  for(const color of WB_COLORS){
+    const btn = document.createElement("button");
+    btn.className = "wb-color" + (color === wbColor ? " selected" : "");
+    btn.style.background = color;
+    btn.dataset.color = color;
+    btn.title = "Pen color";
+    btn.addEventListener("click", () => {
+      wbColor = color;
+      $("wbColors").querySelectorAll(".wb-color").forEach(b => b.classList.toggle("selected", b === btn));
+    });
+    $("wbColors").appendChild(btn);
+  }
+  document.querySelectorAll("#whiteboard [data-size]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      wbSize = btn.dataset.size;
+      document.querySelectorAll("#whiteboard [data-size]").forEach(b => b.classList.toggle("selected", b === btn));
+    });
+  });
+  $("wbUndoBtn").addEventListener("click", () => {
+    endMyStroke();
+    // Skip past any of my lines that are already gone.
+    while(wbMyStrokeIds.length){
+      const id = wbMyStrokeIds.pop();
+      if(wbById.has(id)){
+        removeStroke(id);
+        broadcastWhiteboard({ type: "wb-undo", id });
+        break;
+      }
+    }
+    updateUndoButton();
+  });
+  $("wbClearBtn").addEventListener("click", () => {
+    if(!wbStrokes.length) return;
+    if(!confirm("Clear the whiteboard for everyone in the call?")) return;
+    clearBoard();
+    broadcastWhiteboard({ type: "wb-clear" });
+  });
+
+  function setWhiteboardOpen(open){
+    const overlay = $("callOverlay");
+    // The board needs room, so opening it brings a shrunk call back to full size.
+    if(open && overlay.classList.contains("pip")) $("pipToggleBtn").click();
+    overlay.classList.toggle("wb-open", open);
+    $("whiteboardBtn").classList.toggle("active", open);
+    $("whiteboardBtn").title = open ? "Close whiteboard" : "Open whiteboard";
+    if(open){
+      $("whiteboardBtn").classList.remove("has-news");
+      sizeWhiteboard();
+    } else {
+      endMyStroke();
+    }
+  }
+  $("whiteboardBtn").addEventListener("click", () => setWhiteboardOpen(!isWhiteboardOpen()));
+
+  // The board only lives as long as the call — leaving throws it away.
+  function resetWhiteboard(){
+    setWhiteboardOpen(false);
+    clearBoard();
+    $("whiteboardBtn").classList.remove("has-news");
+  }
 
   // Click any tile (yours, someone else's camera, or a shared screen) to
   // blow it up to real fullscreen; click it again (or press Escape, or use
