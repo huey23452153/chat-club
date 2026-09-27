@@ -24,6 +24,7 @@ const PORT = Number(process.env.CONTROL_HELPER_PORT) || 47615;
 // development; add your own hosting URL with --origin https://example.com
 // (repeatable) or the CONTROL_HELPER_ORIGINS env var (comma-separated).
 const ALLOWED_ORIGINS = new Set([
+  "https://chat-club-one.vercel.app",
   "https://huey23452153.github.io",
   "https://school-chat-9e4d8.web.app",
   "https://school-chat-9e4d8.firebaseapp.com",

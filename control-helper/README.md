@@ -53,7 +53,7 @@ to their own computer.
   fullscreen, and so on.
 - It only listens on `127.0.0.1`, so other computers can't reach it directly.
   It also only accepts connections from chat-club's own web pages:
-  `huey23452153.github.io`, the Firebase hosting URLs, and `localhost` for
+  `chat-club-one.vercel.app`, `huey23452153.github.io`, the Firebase hosting URLs, and `localhost` for
   development. If you host chat-club somewhere else, add that address:
   ```
   npm start -- --origin https://your-site.example
