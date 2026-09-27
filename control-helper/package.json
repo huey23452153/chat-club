@@ -4,8 +4,15 @@
   "version": "1.0.0",
   "description": "Lets a chat-club call partner control this computer's mouse and keyboard while you share your screen and allow it.",
   "main": "server.js",
+  "bin": "app.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "build:exe": "npx -y @yao-pkg/pkg@6 . --targets node22-win-x64 --output dist/ChatClubHelper.exe"
+  },
+  "pkg": {
+    "assets": [
+      "node_modules/@nut-tree-fork/libnut-win32/build/Release/libnut.node"
+    ]
   },
   "dependencies": {
     "@nut-tree-fork/nut-js": "^4.2.6",

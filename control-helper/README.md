@@ -10,6 +10,20 @@ controlling doesn't need anything extra.
 
 ## Setup (once per computer)
 
+### Windows: one file
+
+Double-click **`ChatClubHelper.exe`**. That's it. Nothing else to install.
+
+Windows may show a blue "Windows protected your PC" box, because the file
+isn't signed by a big company. Click **More info**, then **Run anyway**.
+
+To remove it later, run `ChatClubHelper.exe --uninstall`.
+
+(Building the exe: `npm install`, then `npm run build:exe`. It lands in
+`dist/`, which isn't committed because it's ~70 MB.)
+
+### Mac (or Windows without the exe)
+
 1. Install [Node.js](https://nodejs.org/) if you don't have it (the "LTS"
    download).
 2. Get this folder. On GitHub, click the green **Code** button, then
