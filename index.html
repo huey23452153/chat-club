@@ -1011,6 +1011,15 @@
   .call-control-btn.end{ background: var(--coral); }
   .call-control-btn.muted{ background: rgba(255,255,255,0.35); }
   .call-control-btn.active{ background: var(--teal); }
+  /* No such device (or not allowed): greyed out, can't be clicked. */
+  .call-control-btn.unavailable{ opacity:0.35; cursor:not-allowed; filter: grayscale(1); }
+  .video-tile-placeholder{
+    display:none; position:absolute; inset:0;
+    align-items:center; justify-content:center; text-align:center;
+    background:#1E2A2A; color: rgba(255,255,255,0.7); font-size:13px; font-weight:700;
+  }
+  .video-tile.no-video .video-tile-placeholder{ display:flex; }
+  .call-overlay.pip .video-tile-placeholder{ font-size:9px; }
   /* Mirroring makes sense for a front camera (like looking in a mirror) but
      not for shared screen content or a rear/back camera. */
   .video-tile.local-video.sharing-screen video,
@@ -2681,8 +2690,66 @@
   // =========================================================================
   function callDocRef(groupId){ return doc(db, "groups", groupId, "calls", "current"); }
 
+  // Asks for the camera and mic, but a missing or blocked device doesn't
+  // stop anyone joining: they get whichever of the two works (possibly
+  // neither) and can still watch, listen, and share their screen.
+  async function getAvailableMedia(){
+    const md = navigator.mediaDevices;
+    if(!md?.getUserMedia) return new MediaStream();
+    try{
+      return await md.getUserMedia({ video: true, audio: true });
+    } catch(err){
+      const stream = new MediaStream();
+      for(const kind of ["audio", "video"]){
+        try{
+          const s = await md.getUserMedia({ [kind]: true });
+          s.getTracks().forEach(t => stream.addTrack(t));
+        } catch(e){ /* no such device, or not allowed — go without it */ }
+      }
+      return stream;
+    }
+  }
+
+  function updateMediaButtons(){
+    const hasMic = !!localStream?.getAudioTracks().length;
+    const hasCam = !!localStream?.getVideoTracks().length;
+    for(const [btn, has, label, missing] of [
+      [$("toggleMicBtn"), hasMic, "Mute mic", "No microphone (not found or not allowed)"],
+      [$("toggleCamBtn"), hasCam, "Toggle camera", "No camera (not found or not allowed)"],
+    ]){
+      btn.disabled = !has;
+      btn.classList.toggle("unavailable", !has);
+      btn.title = has ? label : missing;
+    }
+  }
+
+  // Whether anything's coming out of my video slot right now: a shared
+  // screen, or a camera if I have one. Others show a placeholder otherwise.
+  function isSendingVideo(){
+    return isSharingScreen || !!localStream?.getVideoTracks().length;
+  }
+  function updateLocalVideoPlaceholder(){
+    document.getElementById("tile-local")?.classList.toggle("no-video", !isSendingVideo());
+  }
+  function broadcastMediaState(){
+    for(const uid of controlChannels.keys()) sendControl(uid, { type: "media", video: isSendingVideo() });
+  }
+
+  function addVideoPlaceholder(tile, text){
+    const ph = document.createElement("div");
+    ph.className = "video-tile-placeholder";
+    ph.textContent = text;
+    tile.appendChild(ph);
+  }
+
+  // The sender for each kind is found through its transceiver, since the
+  // sender itself may have no track (no camera, not sharing).
+  function senderFor(pc, kind){
+    return pc.getTransceivers().find(t => t.receiver.track?.kind === kind)?.sender;
+  }
+
   async function startLocalMedia(){
-    localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    localStream = await getAvailableMedia();
     let vid = document.getElementById("localVideo");
     if(!vid){
       const tile = document.createElement("div");
@@ -2695,13 +2762,17 @@
       label.className = "video-tile-name";
       label.textContent = "You";
       tile.appendChild(vid);
+      addVideoPlaceholder(tile, "📷 No camera");
       tile.appendChild(label);
       $("callVideosGrid").appendChild(tile);
     }
     attachStream(vid, localStream);
     currentFacingMode = "user";
     document.getElementById("tile-local").classList.remove("back-camera");
-    updateSwitchCameraVisibility();
+    updateMediaButtons();
+    updateLocalVideoPlaceholder();
+    if(localStream.getVideoTracks().length) updateSwitchCameraVisibility();
+    else $("switchCameraBtn").style.display = "none";
   }
 
   // Only worth showing on a device that actually has more than one camera
@@ -2726,7 +2797,7 @@
   }
 
   async function switchCamera(){
-    if(isSharingScreen || !localStream) return;
+    if(isSharingScreen || !localStream?.getVideoTracks().length) return;
     const nextFacing = currentFacingMode === "user" ? "environment" : "user";
     let newStream;
     try{
@@ -2743,15 +2814,14 @@
     currentFacingMode = nextFacing;
 
     for(const pc of peerConnections.values()){
-      const sender = pc.getSenders().find(s => s.track && s.track.kind === "video");
-      if(sender) sender.replaceTrack(newTrack);
+      senderFor(pc, "video")?.replaceTrack(newTrack);
     }
     attachStream($("localVideo"), localStream);
     document.getElementById("tile-local").classList.toggle("back-camera", nextFacing === "environment");
   }
 
   function currentVideoTrack(){
-    return isSharingScreen ? screenStream.getVideoTracks()[0] : localStream.getVideoTracks()[0];
+    return (isSharingScreen ? screenStream.getVideoTracks()[0] : localStream.getVideoTracks()[0]) || null;
   }
 
   async function toggleScreenShare(){
@@ -2781,14 +2851,15 @@
     screenTrack.onended = () => stopScreenShare();
 
     for(const pc of peerConnections.values()){
-      const sender = pc.getSenders().find(s => s.track && s.track.kind === "video");
-      if(sender) sender.replaceTrack(screenTrack);
+      senderFor(pc, "video")?.replaceTrack(screenTrack);
     }
     attachStream($("localVideo"), screenStream);
     document.getElementById("tile-local").classList.add("sharing-screen");
     $("toggleScreenBtn").classList.add("active");
     $("toggleScreenBtn").title = "Stop sharing screen";
+    updateLocalVideoPlaceholder();
     broadcastSharingState();
+    broadcastMediaState();
   }
 
   function stopScreenShare(){
@@ -2799,17 +2870,20 @@
     screenStream.getTracks().forEach(t => t.stop());
     screenStream = null;
 
-    const cameraTrack = localStream && localStream.getVideoTracks()[0];
+    // No camera to go back to means sending nothing, not a frozen last
+    // frame of the screen.
+    const cameraTrack = localStream?.getVideoTracks()[0] || null;
     for(const pc of peerConnections.values()){
-      const sender = pc.getSenders().find(s => s.track && s.track.kind === "video");
-      if(sender && cameraTrack) sender.replaceTrack(cameraTrack);
+      senderFor(pc, "video")?.replaceTrack(cameraTrack);
     }
     if(localStream) attachStream($("localVideo"), localStream);
     const tile = document.getElementById("tile-local");
     if(tile) tile.classList.remove("sharing-screen");
     $("toggleScreenBtn").classList.remove("active");
     $("toggleScreenBtn").title = "Share screen";
+    updateLocalVideoPlaceholder();
     broadcastSharingState();
+    broadcastMediaState();
   }
 
   // The `autoplay` HTML attribute alone isn't reliable once a stream is
@@ -2849,6 +2923,7 @@
       tile.appendChild(status);
       tile.appendChild(controlBtn);
       tile.appendChild(controlNote);
+      addVideoPlaceholder(tile, "📷 No camera");
       $("callVideosGrid").appendChild(tile);
       updateControlButton(uid);
     }
@@ -3142,15 +3217,28 @@
     };
   }
 
+  // Collects the other person's tracks into one stream for their tile,
+  // without relying on the tracks arriving already grouped into a stream
+  // (a slot that started out empty, like a no-camera screen share, may not).
+  function handleRemoteTracks(pc, otherUid, otherName){
+    const remoteStream = new MediaStream();
+    pc.ontrack = (e) => {
+      if(!remoteStream.getTracks().includes(e.track)) remoteStream.addTrack(e.track);
+      attachStream(ensureRemoteVideoTile(otherUid, otherName), remoteStream);
+    };
+  }
+
   async function createOfferTo(groupId, otherUid, otherName){
     const pc = new RTCPeerConnection(RTC_CONFIG);
     peerConnections.set(otherUid, pc);
-    pc.addTrack(localStream.getAudioTracks()[0], localStream);
-    // Send whatever's currently active (screen or camera) — a peer
+    // Always an audio and a video slot, even with no mic or camera: an
+    // empty video slot is what a screen share gets swapped into later.
+    // Video sends whatever's currently active (screen or camera) — a peer
     // connection opened mid-share (e.g. someone new joining the call)
     // should start with the shared screen, not the camera underneath it.
-    pc.addTrack(currentVideoTrack(), localStream);
-    pc.ontrack = (e) => { attachStream(ensureRemoteVideoTile(otherUid, otherName), e.streams[0]); };
+    pc.addTransceiver(localStream.getAudioTracks()[0] || "audio", { direction: "sendrecv", streams: [localStream] });
+    pc.addTransceiver(currentVideoTrack() || "video", { direction: "sendrecv", streams: [localStream] });
+    handleRemoteTracks(pc, otherUid, otherName);
     watchIceConnectionState(pc, otherUid);
     // Must exist before createOffer() so the offer includes a data section.
     setupControlChannel(otherUid, pc.createDataChannel("control"));
@@ -3176,9 +3264,7 @@
   async function answerOfferFrom(groupId, otherUid, otherName, peerData){
     const pc = new RTCPeerConnection(RTC_CONFIG);
     peerConnections.set(otherUid, pc);
-    pc.addTrack(localStream.getAudioTracks()[0], localStream);
-    pc.addTrack(currentVideoTrack(), localStream);
-    pc.ontrack = (e) => { attachStream(ensureRemoteVideoTile(otherUid, otherName), e.streams[0]); };
+    handleRemoteTracks(pc, otherUid, otherName);
     watchIceConnectionState(pc, otherUid);
     pc.ondatachannel = (e) => { if(e.channel.label === "control") setupControlChannel(otherUid, e.channel); };
     const key = `${otherUid}_${currentUser.uid}`;
@@ -3190,6 +3276,14 @@
       }
     };
     await pc.setRemoteDescription(new RTCSessionDescription(peerData.offer));
+    // Fill the audio/video slots the offer created (addTrack reuses them).
+    // A slot I have nothing for (no mic/camera) still goes two-way, so a
+    // screen share can be swapped into it later without renegotiating.
+    for(const [kind, track] of [["audio", localStream.getAudioTracks()[0]], ["video", currentVideoTrack()]]){
+      if(track){ pc.addTrack(track, localStream); continue; }
+      const t = pc.getTransceivers().find(t => t.receiver.track?.kind === kind);
+      if(t){ t.direction = "sendrecv"; t.sender.setStreams?.(localStream); }
+    }
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
     await updateDoc(callDocRef(groupId), {
@@ -3241,9 +3335,9 @@
       if(otherUid === currentUser.uid || peerConnections.has(otherUid)) continue;
       const incoming = peers[`${otherUid}_${currentUser.uid}`];
       if(incoming && incoming.offer){
-        answerOfferFrom(groupId, otherUid, participants[otherUid], incoming).catch(()=>{});
+        answerOfferFrom(groupId, otherUid, participants[otherUid], incoming).catch(err => console.error("Answering a call offer failed:", err));
       } else if(currentUser.uid < otherUid){
-        createOfferTo(groupId, otherUid, participants[otherUid]).catch(()=>{});
+        createOfferTo(groupId, otherUid, participants[otherUid]).catch(err => console.error("Making a call offer failed:", err));
       }
     }
 
@@ -3324,6 +3418,7 @@
     controlChannels.set(uid, ch);
     ch.onopen = () => {
       sendControl(uid, { type: "sharing", on: isControllableShare() });
+      sendControl(uid, { type: "media", video: isSendingVideo() });
       sendWhiteboardStateTo(uid); // catch a late joiner up on the board
     };
     // On the answering side the channel arrives (via ondatachannel) already
@@ -3354,6 +3449,10 @@
   function handleControlMessage(uid, msg){
     switch(msg.type){
       // ---- as the one watching someone else's screen ----
+      // ---- either way: whether they have any video to show at all ----
+      case "media":
+        document.getElementById(`tile-${uid}`)?.classList.toggle("no-video", msg.video === false);
+        break;
       case "sharing":
         remoteSharing.set(uid, !!msg.on);
         if(!msg.on){
