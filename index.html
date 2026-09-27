@@ -3279,25 +3279,43 @@
     const send = (msg) => { if(controllingUid === uid) sendControl(uid, { type: "input", ...msg }); };
 
     // Mouse moves fire far more often than is worth sending — at most one
-    // per animation frame, always the latest position.
-    let latestMove = null;
+    // every MOVE_INTERVAL_MS, always the latest position. A plain timer, not
+    // requestAnimationFrame: rAF stops firing whenever this window isn't
+    // being painted (minimized, fully covered), which silently froze the
+    // remote cursor.
+    const MOVE_INTERVAL_MS = 16;
+    let latestMove = null, lastMoveSentAt = 0, moveTimer = null;
+    const flushMove = () => {
+      moveTimer = null;
+      if(!latestMove) return;
+      send({ kind: "move", ...latestMove });
+      latestMove = null;
+      lastMoveSentAt = performance.now();
+    };
     video.addEventListener("pointermove", (e) => {
       const p = pointerToScreenFraction(video, e, false);
       if(!p) return;
-      if(!latestMove) requestAnimationFrame(() => { send({ kind: "move", ...latestMove }); latestMove = null; });
       latestMove = p;
+      if(moveTimer) return;
+      const wait = MOVE_INTERVAL_MS - (performance.now() - lastMoveSentAt);
+      if(wait <= 0) flushMove();
+      else moveTimer = setTimeout(flushMove, wait);
     }, opts);
+    controlInputAbort.signal.addEventListener("abort", () => clearTimeout(moveTimer));
     video.addEventListener("pointerdown", (e) => {
       const p = pointerToScreenFraction(video, e, false);
       if(!p) return;
       e.preventDefault();
       tile.focus({ preventScroll: true });
       video.setPointerCapture?.(e.pointerId); // so a drag released off the tile still ends
+      clearTimeout(moveTimer); moveTimer = null; latestMove = null; // the click carries its own position
       send({ kind: "down", button: e.button, ...p });
     }, opts);
     video.addEventListener("pointerup", (e) => {
       const p = pointerToScreenFraction(video, e, true);
-      if(p) send({ kind: "up", button: e.button, ...p });
+      if(!p) return;
+      clearTimeout(moveTimer); moveTimer = null; latestMove = null;
+      send({ kind: "up", button: e.button, ...p });
     }, opts);
     video.addEventListener("wheel", (e) => {
       e.preventDefault();
