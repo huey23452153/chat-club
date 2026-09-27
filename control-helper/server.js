@@ -122,8 +122,16 @@ async function perform(msg){
       break;
     }
     case "wheel": {
-      // Browsers report wheel deltas in pixels; nut-js scrolls in "clicks".
-      const steps = (d) => Math.min(20, Math.max(1, Math.round(Math.abs(d) / 100)));
+      // Browsers report wheel deltas in pixels (~100 per wheel notch).
+      // nut-js's scroll amount means different things per OS: raw wheel
+      // units on Windows (120 = one notch — measured), pixels on macOS, and
+      // individual wheel clicks on Linux.
+      const steps = (d) => {
+        const px = Math.min(3000, Math.abs(d));
+        if(process.platform === "win32") return Math.max(1, Math.round(px * 1.2));
+        if(process.platform === "darwin") return Math.max(1, Math.round(px));
+        return Math.min(30, Math.max(1, Math.round(px / 100)));
+      };
       if(msg.dy > 0) await mouse.scrollDown(steps(msg.dy));
       else if(msg.dy < 0) await mouse.scrollUp(steps(msg.dy));
       if(msg.dx > 0) await mouse.scrollRight(steps(msg.dx));

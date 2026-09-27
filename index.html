@@ -1029,6 +1029,7 @@
   .control-banner-actions button{ border:none; border-radius:10px; padding:8px 12px; font-weight:700; font-size:13px; cursor:pointer; }
   .control-banner-actions .accept{ background: var(--teal); color:white; }
   .control-banner-actions .decline{ background:#FFF0EE; color:#B5482F; }
+  .control-banner-actions button:disabled{ opacity:0.6; cursor:default; }
 
   /* ---------- Responsive: school Chromebooks / tablets / phones ---------- */
   @media (max-width: 780px){
@@ -2579,13 +2580,23 @@
 
     let stream;
     try{
-      stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+      // Uncapped, a high-DPI screen gets captured at its full physical
+      // resolution (5120x2880 on a 200%-scaled 1440p monitor) — far more than
+      // anyone watching needs, and heavy enough to go blurry and choppy
+      // over a normal connection. 1440p/30fps keeps text sharp.
+      stream = await navigator.mediaDevices.getDisplayMedia({
+        video: { width: { max: 2560 }, height: { max: 1440 }, frameRate: { max: 30 } },
+        audio: false
+      });
     } catch(err){
       return; // user cancelled the browser's share picker — nothing to do
     }
     screenStream = stream;
     isSharingScreen = true;
     const screenTrack = screenStream.getVideoTracks()[0];
+    // Tells the encoder to favor sharp text/detail over smooth motion when
+    // bandwidth is tight — the right trade for a shared screen.
+    if("contentHint" in screenTrack) screenTrack.contentHint = "detail";
     // The browser's own "Stop sharing" control (outside our UI entirely)
     // ends the track directly — react to that the same as our own button.
     screenTrack.onended = () => stopScreenShare();
@@ -3132,6 +3143,10 @@
   function setupControlChannel(uid, ch){
     controlChannels.set(uid, ch);
     ch.onopen = () => sendControl(uid, { type: "sharing", on: isControllableShare() });
+    // On the answering side the channel arrives (via ondatachannel) already
+    // open, so onopen never fires there — send the current state now, or a
+    // share started before this peer connected would never be announced.
+    if(ch.readyState === "open") ch.onopen();
     ch.onmessage = (e) => {
       let msg;
       try{ msg = JSON.parse(e.data); } catch(err){ return; }
@@ -3448,6 +3463,10 @@
     sendControl(uid, { type: "control-grant" });
     showControlBanner("active", `🖱️ ${peerName(uid)} is controlling your computer`,
       "Click Stop control (or stop sharing) to end it right away.");
+    // Stop lands exactly where Allow just was — without this, a double-click
+    // on Allow grants control and instantly revokes it.
+    $("controlStopBtn").disabled = true;
+    setTimeout(() => { $("controlStopBtn").disabled = false; }, 1000);
   });
   $("controlDenyBtn").addEventListener("click", () => {
     const uid = pendingControlRequestUid;
