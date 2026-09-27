@@ -3817,6 +3817,11 @@
   $("toggleScreenBtn").addEventListener("click", () => {
     toggleScreenShare().catch(()=>{});
   });
+  // Phone browsers (iOS Safari, Chrome on Android) have no screen sharing at
+  // all — hide the button there rather than have it silently do nothing.
+  if(!navigator.mediaDevices || typeof navigator.mediaDevices.getDisplayMedia !== "function"){
+    $("toggleScreenBtn").style.display = "none";
+  }
   $("switchCameraBtn").addEventListener("click", () => {
     switchCamera().catch(()=>{});
   });
