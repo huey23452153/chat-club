@@ -171,6 +171,14 @@ async function drain(){
 }
 
 const server = http.createServer((req, res) => {
+  // Lets the installer stop an older running copy before replacing it. The
+  // custom header means a web page can't trigger this: browsers won't send
+  // it cross-origin without a CORS preflight, which this server never allows.
+  if(req.method === "POST" && req.url === "/quit" && req.headers["x-chat-club-helper"] === "quit"){
+    res.end("bye\n");
+    releaseEverything().finally(() => process.exit(0));
+    return;
+  }
   // Lets the page check "is the helper running?" before asking to connect.
   res.writeHead(200, { "Content-Type": "text/plain" });
   res.end("chat-club control helper is running\n");

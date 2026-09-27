@@ -10,40 +10,43 @@ controlling doesn't need anything extra.
 
 ## Setup (once per computer)
 
-Needs [Node.js](https://nodejs.org/) 18 or newer.
+1. Install [Node.js](https://nodejs.org/) if you don't have it (the "LTS"
+   download).
+2. Get this folder. On GitHub, click the green **Code** button, then
+   **Download ZIP**. Unzip it and open the `control-helper` folder.
+3. Double-click the installer:
+   - **Windows:** `Install (Windows).bat`
+   - **Mac:** `Install (Mac).command`. If macOS says it can't be opened,
+     right-click it, choose **Open**, then click **Open** again.
 
-```
-cd control-helper
-npm install
-```
+That's it. The helper now runs quietly in the background and starts by
+itself every time you log in. You never need to open it again, and you can
+delete the downloaded folder afterwards.
 
-**Mac only:** the first time someone controls your Mac, macOS will ask to
-let your terminal app (Terminal, iTerm, VS Code…) control the computer. Allow
-it in **System Settings → Privacy & Security → Accessibility**, then restart
-the helper.
+**Mac only:** the first time someone controls your Mac, macOS asks to let
+"node" control your computer. Turn it on in **System Settings → Privacy &
+Security → Accessibility**. The installer opens that page for you.
 
 ## Using it
 
-1. Start the helper and leave its window open:
-   ```
-   cd control-helper
-   npm start
-   ```
-2. In a chat-club call, click 🖥️ and share your **entire screen**. Sharing a
+1. In a chat-club call, click 🖥️ and share your **entire screen**. Sharing a
    window or a tab won't work, because clicks are mapped onto the whole
    screen.
-3. The other person clicks **🖱️ Request control** on your screen. You get an
-   **Allow / Deny** prompt.
-4. While they're in control, a red bar stays at the top of chat-club. To end
+2. The other person clicks **🖱️ Request control** on your screen. You get an
+   **Allow / Deny** prompt, and nothing happens unless you click Allow.
+3. While they're in control, a red bar stays at the top of chat-club. To end
    it immediately, do any of these:
    - click **Stop control**
    - stop sharing your screen
    - leave the call
-   - press **Ctrl+C** in the helper window
 
 The person controlling clicks on your screen to use it, and types while it's
 selected. Clicking anywhere else (like the chat box) sends their keys back
 to their own computer.
+
+## Removing it
+
+Double-click `Uninstall (Windows).bat` or `Uninstall (Mac).command`.
 
 ## Limits
 
@@ -53,11 +56,18 @@ to their own computer.
   fullscreen, and so on.
 - It only listens on `127.0.0.1`, so other computers can't reach it directly.
   It also only accepts connections from chat-club's own web pages:
-  `chat-club-one.vercel.app`, `huey23452153.github.io`, the Firebase hosting URLs, and `localhost` for
-  development. If you host chat-club somewhere else, add that address:
-  ```
-  npm start -- --origin https://your-site.example
-  ```
+  `chat-club-one.vercel.app`, `huey23452153.github.io`, the Firebase hosting
+  URLs, and `localhost` for development. If chat-club moves somewhere else,
+  that address has to be added in `server.js`.
 - Some browsers ask "allow this site to access devices on your local network?"
   the first time the page connects to the helper. Say yes, or chat-club
   can't reach it.
+
+## For developers
+
+Run it in a terminal instead (it stops when you close the window):
+
+```
+npm install
+npm start
+```
