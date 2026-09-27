@@ -1,0 +1,14 @@
+{
+  "name": "chat-club-control-helper",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Lets a chat-club call partner control this computer's mouse and keyboard while you share your screen and allow it.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@nut-tree-fork/nut-js": "^4.2.6",
+    "ws": "^8.18.0"
+  }
+}

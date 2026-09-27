@@ -976,6 +976,10 @@
     background: rgba(10,20,20,0.7); color:#FFD166; font-size:12.5px; font-weight:700;
     padding: 8px;
   }
+  /* display:flex above would otherwise override the hidden attribute,
+     leaving an invisible-but-dimming overlay over every remote video that
+     also swallows clicks meant for it. */
+  .video-tile-status[hidden]{ display:none; }
   .call-status{ color:white; font-weight:700; margin: 14px 0; font-size:15px; flex-shrink:0; }
   .call-controls{ display:flex; gap:14px; flex-shrink:0; }
   .call-control-btn{
@@ -990,6 +994,40 @@
      not for shared screen content or a rear/back camera. */
   .video-tile.local-video.sharing-screen video,
   .video-tile.local-video.back-camera video{ transform:none; }
+
+  /* ---------- Remote control of a shared screen ---------- */
+  .control-request-btn{
+    position:absolute; top:8px; left:8px; z-index:2;
+    border:none; border-radius:999px; padding:5px 10px;
+    background: rgba(0,0,0,0.6); color:white; font-size:12px; font-weight:700; cursor:pointer;
+  }
+  .control-request-btn:disabled{ opacity:0.7; cursor:default; }
+  .video-tile.controlling .control-request-btn{ background: var(--coral); }
+  .call-overlay.pip .control-request-btn{ font-size:9px; padding:3px 6px; top:4px; left:4px; }
+  .video-tile-control-note{
+    position:absolute; left:50%; top:40px; transform:translateX(-50%); z-index:2;
+    background: rgba(0,0,0,0.75); color:#FFD166; font-size:12px; font-weight:700;
+    padding:5px 10px; border-radius:10px; text-align:center; max-width:90%;
+  }
+  /* While controlling, every click goes to the other computer — so show
+     the whole shared screen (no cropping) and make the mode obvious. */
+  .video-tile.controlling{ cursor: crosshair; outline: 3px solid var(--coral); outline-offset:-3px; }
+  .video-tile.controlling video{ object-fit:contain; touch-action:none; }
+  .video-tile.controlling::after{ display:none; }
+  .control-banner{
+    position:fixed; top:14px; left:50%; transform:translateX(-50%); z-index:400;
+    display:none; flex-direction:column; gap:8px; align-items:center; text-align:center;
+    width:min(420px, calc(100vw - 32px)); padding:12px 16px; border-radius:14px;
+    background:#1E2A2A; color:white; box-shadow: 0 12px 30px -8px rgba(0,0,0,0.6);
+    font-size:14px; font-weight:700;
+  }
+  .control-banner.show{ display:flex; }
+  .control-banner.active{ background:#B5482F; }
+  .control-banner-sub{ font-size:12px; font-weight:500; opacity:0.85; }
+  .control-banner-actions{ display:flex; gap:8px; }
+  .control-banner-actions button{ border:none; border-radius:10px; padding:8px 12px; font-weight:700; font-size:13px; cursor:pointer; }
+  .control-banner-actions .accept{ background: var(--teal); color:white; }
+  .control-banner-actions .decline{ background:#FFF0EE; color:#B5482F; }
 
   /* ---------- Responsive: school Chromebooks / tablets / phones ---------- */
   @media (max-width: 780px){
@@ -1032,6 +1070,18 @@
     <button class="call-control-btn end" id="endCallBtn" title="End call">📞</button>
   </div>
   <div class="pip-resize-handle" id="pipResizeHandle" title="Drag to resize">⤡</div>
+</div>
+<!-- Shown to whoever is sharing their screen: first to ask permission, then
+     (in red) for the whole time someone else is controlling their computer. -->
+<div class="control-banner" id="controlBanner">
+  <div id="controlBannerText"></div>
+  <div class="control-banner-sub" id="controlBannerSub"></div>
+  <div class="control-banner-actions">
+    <button class="accept" id="controlAllowBtn">✓ Allow</button>
+    <button class="decline" id="controlDenyBtn">✕ Deny</button>
+    <button class="decline" id="controlStopBtn">■ Stop control</button>
+    <button class="decline" id="controlCloseBtn">OK</button>
+  </div>
 </div>
 <div id="app">
 
@@ -1454,6 +1504,16 @@
   let screenStream = null;  // set only while actively sharing your screen
   let isSharingScreen = false;
   let currentFacingMode = "user"; // "user" (front) or "environment" (back)
+  // Remote control (see the REMOTE CONTROL section): a "control" data
+  // channel rides along on each peer connection.
+  const controlChannels = new Map(); // otherUid -> RTCDataChannel
+  const remoteSharing = new Map();   // otherUid -> true while they're sharing a controllable screen
+  let controllingUid = null;          // whose screen I'm currently controlling
+  let controlRequestedUid = null;     // whose screen I've asked to control (awaiting their answer)
+  let controlledByUid = null;         // who is currently controlling my computer
+  let pendingControlRequestUid = null; // whose request my Allow/Deny banner is showing
+  let controlHelperSocket = null;     // local helper that actually moves my mouse/keyboard
+  const CONTROL_HELPER_URL = window.CONTROL_HELPER_URL || "ws://127.0.0.1:47615";
 
   // =========================================================================
   //  DOM SHORTCUTS
@@ -2535,10 +2595,13 @@
     document.getElementById("tile-local").classList.add("sharing-screen");
     $("toggleScreenBtn").classList.add("active");
     $("toggleScreenBtn").title = "Stop sharing screen";
+    broadcastSharingState();
   }
 
   function stopScreenShare(){
     if(!isSharingScreen) return;
+    endBeingControlled(true); // nothing on screen to control any more
+    hideControlBanner();
     isSharingScreen = false;
     screenStream.getTracks().forEach(t => t.stop());
     screenStream = null;
@@ -2553,6 +2616,7 @@
     if(tile) tile.classList.remove("sharing-screen");
     $("toggleScreenBtn").classList.remove("active");
     $("toggleScreenBtn").title = "Share screen";
+    broadcastSharingState();
   }
 
   // The `autoplay` HTML attribute alone isn't reliable once a stream is
@@ -2580,10 +2644,20 @@
       const status = document.createElement("div");
       status.className = "video-tile-status";
       status.hidden = true;
+      const controlBtn = document.createElement("button");
+      controlBtn.className = "control-request-btn";
+      controlBtn.hidden = true;
+      controlBtn.addEventListener("click", () => onControlButtonClick(uid));
+      const controlNote = document.createElement("div");
+      controlNote.className = "video-tile-control-note";
+      controlNote.hidden = true;
       tile.appendChild(vid);
       tile.appendChild(label);
       tile.appendChild(status);
+      tile.appendChild(controlBtn);
+      tile.appendChild(controlNote);
       $("callVideosGrid").appendChild(tile);
+      updateControlButton(uid);
     }
     return vid;
   }
@@ -2604,6 +2678,7 @@
   }
 
   function closePeerConnection(uid){
+    cleanupControlFor(uid);
     const pc = peerConnections.get(uid);
     if(pc) pc.close();
     peerConnections.delete(uid);
@@ -2729,6 +2804,8 @@
   function cleanupCallState(){
     for(const uid of Array.from(peerConnections.keys())) closePeerConnection(uid);
     peerConnections.clear();
+    endBeingControlled(false);
+    hideControlBanner();
     if(screenStream){ screenStream.getTracks().forEach(t => t.stop()); screenStream = null; }
     isSharingScreen = false;
     $("toggleScreenBtn").classList.remove("active");
@@ -2881,6 +2958,8 @@
     pc.addTrack(currentVideoTrack(), localStream);
     pc.ontrack = (e) => { attachStream(ensureRemoteVideoTile(otherUid, otherName), e.streams[0]); };
     watchIceConnectionState(pc, otherUid);
+    // Must exist before createOffer() so the offer includes a data section.
+    setupControlChannel(otherUid, pc.createDataChannel("control"));
     const key = `${currentUser.uid}_${otherUid}`;
     pc.onicecandidate = (e) => {
       if(e.candidate){
@@ -2907,6 +2986,7 @@
     pc.addTrack(currentVideoTrack(), localStream);
     pc.ontrack = (e) => { attachStream(ensureRemoteVideoTile(otherUid, otherName), e.streams[0]); };
     watchIceConnectionState(pc, otherUid);
+    pc.ondatachannel = (e) => { if(e.channel.label === "control") setupControlChannel(otherUid, e.channel); };
     const key = `${otherUid}_${currentUser.uid}`;
     pc.onicecandidate = (e) => {
       if(e.candidate){
@@ -2999,6 +3079,360 @@
     $("callStatusText").textContent = othersCount > 0 ? "Connected" : "Waiting for others to join...";
   }
 
+  // =========================================================================
+  //  REMOTE CONTROL
+  // =========================================================================
+  // While someone shares their *entire screen*, anyone else in the call can
+  // ask to control it. It all travels peer-to-peer over each connection's
+  // "control" data channel (never through Firestore):
+  //   viewer -> sharer: control-request, control-release, input
+  //   sharer -> viewer: sharing, control-grant, control-deny, control-revoke
+  // A web page can't move the real mouse, so the sharer's tab hands the
+  // inputs to a small local helper program (control-helper/ in this repo)
+  // that performs them. Nothing happens until the sharer clicks Allow, and
+  // they can stop it at any moment.
+
+  const CONTROL_DENY_REASONS = {
+    declined: "They said no",
+    "no-helper": "They need to run the control helper app first",
+    "not-monitor": "They need to share their entire screen, not a window or tab",
+    busy: "Someone else is already controlling their screen",
+    "not-sharing": "They aren't sharing their screen",
+  };
+  const CONTROL_INPUT_KINDS = new Set(["move", "down", "up", "wheel", "keydown", "keyup", "release-all"]);
+  let controlRequestSeq = 0;
+  let controlInputAbort = null; // removes the viewer's input listeners when control ends
+
+  function peerName(uid){
+    return document.querySelector(`#tile-${uid} .video-tile-name`)?.textContent || "Someone";
+  }
+
+  function sendControl(uid, msg){
+    const ch = controlChannels.get(uid);
+    if(ch && ch.readyState === "open") ch.send(JSON.stringify(msg));
+  }
+
+  // Controlling a single window or tab can't work — clicks are mapped onto
+  // the whole screen — so only an entire-screen share counts. Browsers that
+  // don't report displaySurface get the benefit of the doubt.
+  function isControllableShare(){
+    if(!isSharingScreen || !screenStream) return false;
+    const surface = screenStream.getVideoTracks()[0]?.getSettings?.().displaySurface;
+    return !surface || surface === "monitor";
+  }
+
+  function broadcastSharingState(){
+    const msg = { type: "sharing", on: isControllableShare() };
+    for(const uid of controlChannels.keys()) sendControl(uid, msg);
+  }
+
+  function setupControlChannel(uid, ch){
+    controlChannels.set(uid, ch);
+    ch.onopen = () => sendControl(uid, { type: "sharing", on: isControllableShare() });
+    ch.onmessage = (e) => {
+      let msg;
+      try{ msg = JSON.parse(e.data); } catch(err){ return; }
+      if(msg && typeof msg.type === "string") handleControlMessage(uid, msg);
+    };
+    ch.onclose = () => { if(controlChannels.get(uid) === ch) cleanupControlFor(uid); };
+  }
+
+  // Everything tied to one peer, torn down when they leave the call.
+  function cleanupControlFor(uid){
+    if(controllingUid === uid) stopControlling(false);
+    if(controlRequestedUid === uid) controlRequestedUid = null;
+    if(controlledByUid === uid) endBeingControlled(false);
+    if(pendingControlRequestUid === uid) hideControlBanner();
+    controlChannels.delete(uid);
+    remoteSharing.delete(uid);
+    updateControlButton(uid);
+  }
+
+  function handleControlMessage(uid, msg){
+    switch(msg.type){
+      // ---- as the one watching someone else's screen ----
+      case "sharing":
+        remoteSharing.set(uid, !!msg.on);
+        if(!msg.on){
+          if(controllingUid === uid) stopControlling(false);
+          if(controlRequestedUid === uid) controlRequestedUid = null;
+        }
+        updateControlButton(uid);
+        break;
+      case "control-grant":
+        if(controlRequestedUid === uid) startControlling(uid);
+        break;
+      case "control-deny":
+        if(controlRequestedUid === uid){
+          controlRequestedUid = null;
+          updateControlButton(uid);
+          showControlNote(uid, CONTROL_DENY_REASONS[msg.reason] || CONTROL_DENY_REASONS.declined);
+        }
+        break;
+      case "control-revoke":
+        if(controllingUid === uid){
+          stopControlling(false);
+          showControlNote(uid, "They stopped your control");
+        }
+        break;
+
+      // ---- as the one sharing my screen ----
+      case "control-request":
+        if(!isSharingScreen) sendControl(uid, { type: "control-deny", reason: "not-sharing" });
+        else if(!isControllableShare()) sendControl(uid, { type: "control-deny", reason: "not-monitor" });
+        else if(controlledByUid === uid) sendControl(uid, { type: "control-grant" }); // already allowed
+        else if(controlledByUid || (pendingControlRequestUid && pendingControlRequestUid !== uid)){
+          sendControl(uid, { type: "control-deny", reason: "busy" });
+        } else showControlRequest(uid);
+        break;
+      case "control-release":
+        if(controlledByUid === uid){
+          endBeingControlled(false);
+          showControlBanner("info", `${peerName(uid)} stopped controlling your computer`);
+        }
+        break;
+      case "input":
+        // Only ever from the one person I allowed, and only known fields —
+        // the helper never sees anything else a peer might try to send.
+        if(controlledByUid === uid && CONTROL_INPUT_KINDS.has(msg.kind) &&
+           controlHelperSocket && controlHelperSocket.readyState === WebSocket.OPEN){
+          const { kind, x, y, button, dx, dy, code } = msg;
+          controlHelperSocket.send(JSON.stringify({ type: "input", kind, x, y, button, dx, dy, code }));
+        }
+        break;
+    }
+  }
+
+  // ---------- viewer side: asking for and using control ----------
+
+  function updateControlButton(uid){
+    const tile = document.getElementById(`tile-${uid}`);
+    const btn = tile?.querySelector(".control-request-btn");
+    if(!btn) return;
+    const controlling = controllingUid === uid;
+    const waiting = controlRequestedUid === uid;
+    tile.classList.toggle("controlling", controlling);
+    btn.hidden = !remoteSharing.get(uid) && !controlling;
+    btn.disabled = waiting;
+    btn.textContent = controlling ? "■ Stop controlling"
+      : waiting ? "Waiting for them to allow…"
+      : "🖱️ Request control";
+  }
+
+  function showControlNote(uid, text){
+    const note = document.querySelector(`#tile-${uid} .video-tile-control-note`);
+    if(!note) return;
+    note.textContent = text;
+    note.hidden = false;
+    clearTimeout(note._hideTimer);
+    note._hideTimer = setTimeout(() => { note.hidden = true; }, 5000);
+  }
+
+  function onControlButtonClick(uid){
+    if(controllingUid === uid){ stopControlling(true); return; }
+    if(controlRequestedUid) return;
+    if(controllingUid) stopControlling(true); // one screen at a time
+    controlRequestedUid = uid;
+    const seq = ++controlRequestSeq;
+    sendControl(uid, { type: "control-request" });
+    updateControlButton(uid);
+    // Don't sit on "waiting" forever if they never answer.
+    setTimeout(() => {
+      if(controlRequestedUid === uid && controlRequestSeq === seq){
+        controlRequestedUid = null;
+        updateControlButton(uid);
+        showControlNote(uid, "No answer — try again");
+      }
+    }, 30000);
+  }
+
+  // Where on the *shared screen* (0..1 in each direction) a pointer event
+  // landed, accounting for the letterboxing object-fit adds around the
+  // picture. Null when it's outside the picture, unless `clampToEdge`.
+  function pointerToScreenFraction(video, e, clampToEdge){
+    const vw = video.videoWidth, vh = video.videoHeight;
+    if(!vw || !vh) return null;
+    const rect = video.getBoundingClientRect();
+    const fit = getComputedStyle(video).objectFit;
+    const scale = fit === "cover" ? Math.max(rect.width / vw, rect.height / vh)
+      : Math.min(rect.width / vw, rect.height / vh);
+    const w = vw * scale, h = vh * scale;
+    let x = (e.clientX - rect.left - (rect.width - w) / 2) / w;
+    let y = (e.clientY - rect.top - (rect.height - h) / 2) / h;
+    if(clampToEdge){ x = Math.min(1, Math.max(0, x)); y = Math.min(1, Math.max(0, y)); }
+    else if(x < 0 || x > 1 || y < 0 || y > 1) return null;
+    return { x: Math.round(x * 10000) / 10000, y: Math.round(y * 10000) / 10000 };
+  }
+
+  function startControlling(uid){
+    const tile = document.getElementById(`tile-${uid}`);
+    const video = tile?.querySelector("video");
+    controlRequestedUid = null;
+    if(!video){ sendControl(uid, { type: "control-release" }); return; }
+    controllingUid = uid;
+    tile.tabIndex = 0; // keyboard input goes to them only while this tile has focus
+    controlInputAbort = new AbortController();
+    const opts = { signal: controlInputAbort.signal };
+    const send = (msg) => { if(controllingUid === uid) sendControl(uid, { type: "input", ...msg }); };
+
+    // Mouse moves fire far more often than is worth sending — at most one
+    // per animation frame, always the latest position.
+    let latestMove = null;
+    video.addEventListener("pointermove", (e) => {
+      const p = pointerToScreenFraction(video, e, false);
+      if(!p) return;
+      if(!latestMove) requestAnimationFrame(() => { send({ kind: "move", ...latestMove }); latestMove = null; });
+      latestMove = p;
+    }, opts);
+    video.addEventListener("pointerdown", (e) => {
+      const p = pointerToScreenFraction(video, e, false);
+      if(!p) return;
+      e.preventDefault();
+      tile.focus({ preventScroll: true });
+      video.setPointerCapture?.(e.pointerId); // so a drag released off the tile still ends
+      send({ kind: "down", button: e.button, ...p });
+    }, opts);
+    video.addEventListener("pointerup", (e) => {
+      const p = pointerToScreenFraction(video, e, true);
+      if(p) send({ kind: "up", button: e.button, ...p });
+    }, opts);
+    video.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      const unit = e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? 800 : 1; // lines / pages -> pixels
+      send({ kind: "wheel", dx: e.deltaX * unit, dy: e.deltaY * unit });
+    }, { ...opts, passive: false });
+    video.addEventListener("contextmenu", (e) => e.preventDefault(), opts);
+    for(const type of ["keydown", "keyup"]){
+      tile.addEventListener(type, (e) => {
+        if(!e.code) return;
+        e.preventDefault(); // Tab, Space, arrows etc. belong to their computer now
+        send({ kind: type, code: e.code });
+      }, opts);
+    }
+    // Clicking away (e.g. into the chat box) mustn't leave a key held down
+    // on their end.
+    tile.addEventListener("blur", () => send({ kind: "release-all" }), opts);
+
+    updateControlButton(uid);
+    tile.focus({ preventScroll: true });
+    showControlNote(uid, "You're in control — click the screen to use it");
+  }
+
+  function stopControlling(notify){
+    const uid = controllingUid;
+    if(!uid) return;
+    if(notify){
+      sendControl(uid, { type: "input", kind: "release-all" });
+      sendControl(uid, { type: "control-release" });
+    }
+    controllingUid = null;
+    if(controlInputAbort){ controlInputAbort.abort(); controlInputAbort = null; }
+    document.getElementById(`tile-${uid}`)?.removeAttribute("tabindex");
+    updateControlButton(uid);
+  }
+
+  // ---------- sharer side: approving and being controlled ----------
+
+  // mode: "request" (Allow/Deny), "active" (red, Stop), "info" (OK), "busy" (no buttons)
+  function showControlBanner(mode, text, sub){
+    $("controlBannerText").textContent = text;
+    $("controlBannerSub").textContent = sub || "";
+    $("controlBanner").classList.add("show");
+    $("controlBanner").classList.toggle("active", mode === "active");
+    $("controlAllowBtn").hidden = mode !== "request";
+    $("controlDenyBtn").hidden = mode !== "request";
+    $("controlStopBtn").hidden = mode !== "active";
+    $("controlCloseBtn").hidden = mode !== "info";
+  }
+  function hideControlBanner(){
+    pendingControlRequestUid = null;
+    $("controlBanner").classList.remove("show", "active");
+  }
+
+  function showControlRequest(uid){
+    pendingControlRequestUid = uid;
+    showControlBanner("request", `${peerName(uid)} wants to control your mouse and keyboard`,
+      "Only allow people you trust. You can stop it at any time.");
+  }
+
+  // Resolves true once the local helper program is connected and ready.
+  function connectControlHelper(){
+    if(controlHelperSocket && controlHelperSocket.readyState === WebSocket.OPEN) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      let ws;
+      try{ ws = new WebSocket(CONTROL_HELPER_URL); } catch(err){ resolve(false); return; }
+      const timer = setTimeout(() => { ws.close(); resolve(false); }, 4000);
+      ws.onmessage = (e) => {
+        let msg;
+        try{ msg = JSON.parse(e.data); } catch(err){ return; }
+        if(msg.type === "helper-ready"){ clearTimeout(timer); controlHelperSocket = ws; resolve(true); }
+      };
+      ws.onerror = () => { clearTimeout(timer); resolve(false); };
+      ws.onclose = () => {
+        clearTimeout(timer);
+        resolve(false);
+        // The helper quit (or was closed) mid-session — control is over.
+        if(controlHelperSocket === ws){
+          controlHelperSocket = null;
+          if(controlledByUid){
+            endBeingControlled(true);
+            showControlBanner("info", "Remote control stopped", "The control helper app was closed.");
+          }
+        }
+      };
+    });
+  }
+
+  function endBeingControlled(notify){
+    const uid = controlledByUid;
+    if(!uid) return;
+    controlledByUid = null;
+    if(notify) sendControl(uid, { type: "control-revoke" });
+    const ws = controlHelperSocket;
+    controlHelperSocket = null; // cleared first so its onclose doesn't treat this as a crash
+    if(ws){
+      try{ ws.send(JSON.stringify({ type: "input", kind: "release-all" })); } catch(err){}
+      ws.close();
+    }
+    hideControlBanner();
+  }
+
+  $("controlAllowBtn").addEventListener("click", async () => {
+    const uid = pendingControlRequestUid;
+    if(!uid) return;
+    if(!isControllableShare()){
+      sendControl(uid, { type: "control-deny", reason: "not-monitor" });
+      showControlBanner("info", "Share your entire screen to allow control",
+        "Control only works when you share a whole screen, not a window or tab.");
+      return;
+    }
+    showControlBanner("busy", "Connecting to the control helper…");
+    const ok = await connectControlHelper();
+    // They may have left, or I may have stopped sharing, while that ran.
+    if(pendingControlRequestUid !== uid || !isControllableShare()){
+      if(ok && !controlledByUid) controlHelperSocket?.close();
+      return;
+    }
+    if(!ok){
+      sendControl(uid, { type: "control-deny", reason: "no-helper" });
+      showControlBanner("info", "The control helper isn't running on this computer",
+        "Start it first (see control-helper/README.md in chat-club), then have them ask again.");
+      return;
+    }
+    pendingControlRequestUid = null;
+    controlledByUid = uid;
+    sendControl(uid, { type: "control-grant" });
+    showControlBanner("active", `🖱️ ${peerName(uid)} is controlling your computer`,
+      "Click Stop control (or stop sharing) to end it right away.");
+  });
+  $("controlDenyBtn").addEventListener("click", () => {
+    const uid = pendingControlRequestUid;
+    if(uid) sendControl(uid, { type: "control-deny", reason: "declined" });
+    hideControlBanner();
+  });
+  $("controlStopBtn").addEventListener("click", () => endBeingControlled(true));
+  $("controlCloseBtn").addEventListener("click", () => hideControlBanner());
+
   $("callBtn").addEventListener("click", async () => {
     const groupId = activeGroupId;
     if(!groupId) return;
@@ -3066,6 +3500,10 @@
   $("callVideosGrid").addEventListener("click", (e) => {
     const tile = e.target.closest(".video-tile");
     if(!tile) return;
+    // Clicks on a tile's own buttons, or on a screen being remotely
+    // controlled (those clicks belong to the other computer), aren't
+    // fullscreen toggles.
+    if(e.target.closest("button") || tile.classList.contains("controlling")) return;
     const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
     if(fsEl === tile){
       (document.exitFullscreen || document.webkitExitFullscreen)?.call(document);
