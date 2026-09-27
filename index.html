@@ -553,6 +553,18 @@
     padding: 5px 10px; font-size:12.5px; font-weight:700; color: var(--ink-soft);
     display:flex; align-items:center; gap:5px;
   }
+  /* Online status: green = on in the last minute or so, grey = away */
+  .presence-dot{
+    width:8px; height:8px; border-radius:50%; flex-shrink:0;
+    background: #B8C2C2; display:inline-block;
+  }
+  .presence-dot.on{ background:#2ECC71; box-shadow: 0 0 0 2px rgba(46,204,113,0.25); }
+  .chat-item .avatar{ position:relative; }
+  .avatar-presence{
+    position:absolute; right:-1px; bottom:-1px; width:11px; height:11px;
+    border:2px solid var(--surface); box-shadow:none;
+  }
+  .online-text{ color:#1F9D57; font-weight:700; }
   .member-chip-remove{
     background:none; border:none; color: var(--ink-soft); font-size:13px;
     line-height:1; padding:0; margin:0 -2px 0 1px; border-radius:50%;
@@ -1667,7 +1679,9 @@
       showScreen("app");
       listenToMyGroups();
       listenToMyInvites();
+      startPresence();
     } else {
+      stopPresence();
       currentUser = null;
       activeGroupId = null;
       if(groupsUnsub) groupsUnsub();
@@ -1681,6 +1695,95 @@
       showScreen("auth");
     }
   });
+
+  // =========================================================================
+  //  ONLINE STATUS
+  // =========================================================================
+  // Each signed-in tab bumps its own users/{uid}.lastActive every
+  // PRESENCE_HEARTBEAT_MS for as long as Chat Club is open (even in a
+  // background tab, like other chat apps); anyone whose bump is recent
+  // enough counts as online. Closing the tab needs no cleanup — the bumps
+  // just stop and they fade to offline on their own.
+  const PRESENCE_HEARTBEAT_MS = 30000;
+  // Browsers slow background-tab timers down to about once a minute, so
+  // allow a bit more than two of those before calling someone offline.
+  const PRESENCE_ONLINE_MS = 150000;
+  const presence = new Map();       // uid -> { lastActive (server ms), seenAt (local ms of the last change) }
+  const presenceUnsubs = new Map(); // uid -> unsubscribe
+  let presenceHeartbeat = null, presenceRefresh = null;
+
+  function sendPresenceHeartbeat(){
+    if(!currentUser) return;
+    updateDoc(doc(db, "users", currentUser.uid), { lastActive: serverTimestamp() }).catch(()=>{});
+  }
+  // Coming back to the tab refreshes straight away rather than waiting for
+  // the next (possibly throttled) tick.
+  document.addEventListener("visibilitychange", () => {
+    if(document.visibilityState === "visible") sendPresenceHeartbeat();
+  });
+
+  function startPresence(){
+    stopPresence();
+    sendPresenceHeartbeat();
+    presenceHeartbeat = setInterval(sendPresenceHeartbeat, PRESENCE_HEARTBEAT_MS);
+    // "Online" is time-based, so re-render now and then even with no new data.
+    presenceRefresh = setInterval(renderPresence, 15000);
+  }
+  function stopPresence(){
+    clearInterval(presenceHeartbeat); clearInterval(presenceRefresh);
+    presenceHeartbeat = presenceRefresh = null;
+    for(const unsub of presenceUnsubs.values()) unsub();
+    presenceUnsubs.clear();
+    presence.clear();
+  }
+
+  // Keep one listener per person I share a group with (and drop the rest).
+  function watchPresenceOf(uids){
+    if(!currentUser) return;
+    const wanted = new Set(uids);
+    wanted.delete(currentUser.uid);
+    for(const [uid, unsub] of presenceUnsubs){
+      if(!wanted.has(uid)){ unsub(); presenceUnsubs.delete(uid); presence.delete(uid); }
+    }
+    for(const uid of wanted){
+      if(presenceUnsubs.has(uid)) continue;
+      presenceUnsubs.set(uid, onSnapshot(doc(db, "users", uid), (snap) => {
+        const t = snap.data()?.lastActive;
+        const lastActive = t?.toMillis ? t.toMillis() : 0;
+        const prev = presence.get(uid);
+        // A *change* we watched happen is proof they're active right now,
+        // regardless of how far this device's clock is off from the server's.
+        const seenAt = prev && prev.lastActive !== lastActive && lastActive ? Date.now() : (prev?.seenAt || 0);
+        presence.set(uid, { lastActive, seenAt });
+        renderPresence();
+      }, () => {}));
+    }
+  }
+
+  function isOnline(uid){
+    if(currentUser && uid === currentUser.uid) return true;
+    const p = presence.get(uid);
+    if(!p || !p.lastActive) return false;
+    const now = Date.now();
+    return (now - p.seenAt) < PRESENCE_ONLINE_MS || (now - p.lastActive) < PRESENCE_ONLINE_MS;
+  }
+  function onlineOthersCount(g){
+    return (g.memberIds || []).filter(uid => uid !== currentUser?.uid && isOnline(uid)).length;
+  }
+
+  // Heartbeats land every 30s per friend, but only an actual online/offline
+  // flip is worth a redraw (rebuilding the chat list replays its slide-in
+  // animation, which would twitch constantly otherwise).
+  let lastPresenceSignature = "";
+  function renderPresence(){
+    if(!currentUser) return;
+    const signature = [...presence.keys()].sort().map(uid => uid + (isOnline(uid) ? "1" : "0")).join();
+    if(signature === lastPresenceSignature) return;
+    lastPresenceSignature = signature;
+    renderGroupList();
+    const g = activeGroupId && myGroups.find(g => g.id === activeGroupId);
+    if(g){ renderChatHeader(g); renderCurrentMembers(); }
+  }
 
   // =========================================================================
   //  GROUPS LIST
@@ -1716,6 +1819,7 @@
       }
       previousGroupIds = currentGroupIds;
 
+      watchPresenceOf(myGroups.flatMap(g => g.memberIds || []));
       renderGroupList();
       if(activeGroupId){
         const stillIn = myGroups.find(g => g.id === activeGroupId);
@@ -1737,11 +1841,12 @@
     myGroups.forEach(g => {
       const li = document.createElement("li");
       li.className = "chat-item" + (g.id === activeGroupId ? " active" : "");
+      const online = onlineOthersCount(g);
       li.innerHTML = `
-        <div class="avatar">${initials(g.name)}</div>
+        <div class="avatar">${initials(g.name)}${online ? `<span class="presence-dot on avatar-presence" title="Someone's online"></span>` : ""}</div>
         <div style="min-width:0;">
           <div class="chat-item-name">${escapeHtml(g.name)}</div>
-          <div class="chat-item-sub">${(g.memberIds||[]).length} people</div>
+          <div class="chat-item-sub">${(g.memberIds||[]).length} people${online ? ` · <span class="online-text">${online} online</span>` : ""}</div>
         </div>`;
       li.addEventListener("click", () => openGroup(g.id));
       list.appendChild(li);
@@ -1924,7 +2029,8 @@
 
   function renderChatHeader(g){
     $("chatTitle").textContent = g.name;
-    $("chatMemberCount").textContent = `${(g.memberIds||[]).length} people`;
+    const online = onlineOthersCount(g);
+    $("chatMemberCount").textContent = `${(g.memberIds||[]).length} people` + (online ? ` · ${online} online` : "");
     $("deleteChatBtn").style.display = (g.ownerId === currentUser.uid) ? "inline-flex" : "none";
     // Any group can start a call now — the MAX_CALL_PARTICIPANTS cap on who
     // can actually be *in* it at once (mesh calling gets rough past a
@@ -2293,6 +2399,11 @@
     Object.entries(g.memberNames || {}).forEach(([uid, name]) => {
       const chip = document.createElement("span");
       chip.className = "member-chip";
+      const dot = document.createElement("span");
+      const on = isOnline(uid);
+      dot.className = "presence-dot" + (on ? " on" : "");
+      dot.title = on ? "Online" : "Offline";
+      chip.appendChild(dot);
       const nameSpan = document.createElement("span");
       nameSpan.textContent = name;
       chip.appendChild(nameSpan);
