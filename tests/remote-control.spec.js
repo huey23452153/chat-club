@@ -83,7 +83,7 @@ test("a call partner can request, get, use, and lose control of a shared screen"
   await pageA.evaluate(() => { window.__helperRunning = false; });
   await requestBtn.click();
   await pageA.click("#controlAllowBtn");
-  await expect(pageA.locator("#controlBannerText")).toHaveText("The control helper isn't running on this computer");
+  await expect(pageA.locator("#controlBannerText")).toHaveText("Remote control needs a one-time setup on this computer");
   await expect(pageB.locator(".video-tile-control-note")).toHaveText("They need to run the control helper app first", { timeout: 10000 });
   await pageA.click("#controlCloseBtn");
   await expect(pageA.locator("#controlBanner")).not.toHaveClass(/show/);

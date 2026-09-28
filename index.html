@@ -1701,6 +1701,7 @@
     authSubmitBtn.disabled = true;
     try{
       if(authMode === "signup"){
+        signingUpName = name;
         const cred = await createUserWithEmailAndPassword(auth, authEmail, password);
         await updateProfile(cred.user, { displayName: name });
         await setDoc(doc(db, "users", cred.user.uid), {
@@ -1715,6 +1716,7 @@
     } catch(err){
       showAuthMsg(friendlyAuthError(err));
     } finally {
+      signingUpName = null;
       authSubmitBtn.disabled = false;
     }
   });
@@ -1724,9 +1726,13 @@
   // =========================================================================
   //  AUTH STATE -> LOAD APP
   // =========================================================================
+  // Signing up fires onAuthStateChanged before updateProfile has set the
+  // new account's name, so remember it here rather than falling back to the
+  // internal "name@chatclub.local" login email.
+  let signingUpName = null;
   onAuthStateChanged(auth, async (user) => {
     if(user){
-      let displayName = user.displayName;
+      let displayName = user.displayName || signingUpName;
       if(!displayName){
         const snap = await getDoc(doc(db, "users", user.uid));
         displayName = snap.exists() ? snap.data().displayName : (user.email || "Friend");

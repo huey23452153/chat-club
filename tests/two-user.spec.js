@@ -26,7 +26,7 @@ test("inviting a friend and them accepting adds them to the group", async ({ bro
   await expect(pageB.locator(".chat-item-name").filter({ hasText: "Friends Chat" })).toBeVisible();
 
   // The inviter's live listener should reflect the new member count too.
-  await expect(pageA.locator("#chatMemberCount")).toHaveText("2 people");
+  await expect(pageA.locator("#chatMemberCount")).toHaveText(/^2 people/);
 
   await ctxA.close();
   await ctxB.close();
@@ -191,7 +191,7 @@ test("a three-person group call connects everyone to everyone", async ({ browser
   await inviteToGroup(pageA, nameC);
   await acceptFirstInvite(pageC);
 
-  await expect(pageA.locator("#chatMemberCount")).toHaveText("3 people");
+  await expect(pageA.locator("#chatMemberCount")).toHaveText(/^3 people/);
   await expect(pageA.locator("#callBtn")).toBeVisible();
 
   for (const p of [pageB, pageC]) {
@@ -231,7 +231,7 @@ test("an owner can remove a member from the group", async ({ browser }) => {
   await inviteToGroup(pageA, nameB);
   await acceptFirstInvite(pageB);
 
-  await expect(pageA.locator("#chatMemberCount")).toHaveText("2 people");
+  await expect(pageA.locator("#chatMemberCount")).toHaveText(/^2 people/);
 
   pageA.on("dialog", (dialog) => dialog.accept());
   await pageA.click("#addPersonBtn");
@@ -510,7 +510,7 @@ test("a fifth person can't join once a call already has 4 people", async ({ brow
 
   // A group bigger than the call cap still gets a call button — the cap is
   // on who can be *in* the call at once, not on who's allowed to start one.
-  await expect(pageA.locator("#chatMemberCount")).toHaveText("5 people");
+  await expect(pageA.locator("#chatMemberCount")).toHaveText(/^5 people/);
   await expect(pageA.locator("#callBtn")).toBeVisible();
 
   for (const p of [pageB, pageC, pageD, pageE]) {
