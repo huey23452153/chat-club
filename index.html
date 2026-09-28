@@ -1034,6 +1034,17 @@
   .control-request-btn:disabled{ opacity:0.7; cursor:default; }
   .video-tile.controlling .control-request-btn{ background: var(--coral); }
   .call-overlay.pip .control-request-btn{ font-size:9px; padding:3px 6px; top:4px; left:4px; }
+  /* Fullscreen toggle, sitting opposite the control button. Because it's a
+     <button>, its clicks are excluded from both the tile's click-to-fullscreen
+     handler and the remote-control input — so it works even while controlling,
+     which is the one time clicking the tile body can't toggle fullscreen. */
+  .control-fs-btn{
+    position:absolute; top:8px; right:8px; z-index:3;
+    border:none; border-radius:999px; width:30px; height:30px; padding:0;
+    background: rgba(0,0,0,0.6); color:white; font-size:15px; line-height:1; cursor:pointer;
+  }
+  .video-tile:fullscreen .control-fs-btn, .video-tile:-webkit-full-screen .control-fs-btn{ top:16px; right:16px; }
+  .call-overlay.pip .control-fs-btn{ width:22px; height:22px; font-size:11px; top:4px; right:4px; }
   .video-tile-control-note{
     position:absolute; left:50%; top:40px; transform:translateX(-50%); z-index:2;
     background: rgba(0,0,0,0.75); color:#FFD166; font-size:12px; font-weight:700;
@@ -2915,6 +2926,12 @@
       controlBtn.className = "control-request-btn";
       controlBtn.hidden = true;
       controlBtn.addEventListener("click", () => onControlButtonClick(uid));
+      const fsBtn = document.createElement("button");
+      fsBtn.className = "control-fs-btn";
+      fsBtn.title = "Fullscreen";
+      fsBtn.textContent = "⛶";
+      fsBtn.hidden = true;
+      fsBtn.addEventListener("click", () => toggleTileFullscreen(tile));
       const controlNote = document.createElement("div");
       controlNote.className = "video-tile-control-note";
       controlNote.hidden = true;
@@ -2922,6 +2939,7 @@
       tile.appendChild(label);
       tile.appendChild(status);
       tile.appendChild(controlBtn);
+      tile.appendChild(fsBtn);
       tile.appendChild(controlNote);
       addVideoPlaceholder(tile, "📷 No camera");
       $("callVideosGrid").appendChild(tile);
@@ -3519,6 +3537,23 @@
     btn.textContent = controlling ? "■ Stop controlling"
       : waiting ? "Waiting for them to allow…"
       : "🖱️ Request control";
+    // The ⛶ button shows on a shared screen (or while controlling one), the
+    // one case where clicking the tile body can't toggle fullscreen itself.
+    const fsBtn = tile.querySelector(".control-fs-btn");
+    if(fsBtn) fsBtn.hidden = !remoteSharing.get(uid) && !controlling;
+  }
+
+  // Shared by the ⛶ button and the click-to-fullscreen handler.
+  function toggleTileFullscreen(tile){
+    if(!tile) return;
+    const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
+    if(fsEl === tile){
+      (document.exitFullscreen || document.webkitExitFullscreen)?.call(document);
+      return;
+    }
+    if(tile.requestFullscreen) tile.requestFullscreen().catch(()=>{});
+    else if(tile.webkitRequestFullscreen) tile.webkitRequestFullscreen();
+    else tile.querySelector("video")?.webkitEnterFullscreen?.(); // iOS Safari: only the <video> itself supports native fullscreen
   }
 
   function showControlNote(uid, text){
@@ -4127,14 +4162,7 @@
     // controlled (those clicks belong to the other computer), aren't
     // fullscreen toggles.
     if(e.target.closest("button") || tile.classList.contains("controlling")) return;
-    const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
-    if(fsEl === tile){
-      (document.exitFullscreen || document.webkitExitFullscreen)?.call(document);
-      return;
-    }
-    if(tile.requestFullscreen) tile.requestFullscreen().catch(()=>{});
-    else if(tile.webkitRequestFullscreen) tile.webkitRequestFullscreen();
-    else tile.querySelector("video")?.webkitEnterFullscreen?.(); // iOS Safari: only the <video> itself supports native fullscreen
+    toggleTileFullscreen(tile);
   });
 
   // =========================================================================
