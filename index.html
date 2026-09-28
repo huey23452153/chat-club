@@ -493,12 +493,29 @@
   }
   .modal-backdrop.show{ opacity:1; visibility:visible; pointer-events:auto; }
   .modal{
-    background: var(--surface); border-radius: 20px;
+    position: relative;
+    /* A dedicated opaque surface, not the page's --surface: on "glass"
+       background themes --surface is semi-transparent (by design, for the
+       app chrome), which made a modal show the page behind it through and
+       lose contrast. Dialogs always stay solid and readable. */
+    background: var(--modal-surface, var(--surface)); border-radius: 20px;
     width:100%; max-width: 380px; padding: 26px;
     box-shadow: 0 24px 60px -20px rgba(20,86,83,0.35);
-    max-height: 100%; overflow-y: auto;
+    max-height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch;
   }
   .modal-backdrop.show .modal{ animation: modal-pop-in .22s ease; }
+  /* Sticks to the top of the modal's own scroll area, so there's always a
+     way to close it even if the modal is taller than the screen and
+     scrolling doesn't happen (e.g. a stuck touch gesture) — you never have
+     to reach a button at the bottom to get out. */
+  .modal-x{
+    position: sticky; top: -26px; float: right;
+    margin: -10px -10px 4px 10px;
+    width: 34px; height: 34px; border-radius: 50%; z-index: 5;
+    display:flex; align-items:center; justify-content:center;
+    background: var(--bg); color: var(--ink); border: 1px solid var(--line);
+    font-size: 15px; cursor: pointer;
+  }
   .modal h3{ margin: 0 0 4px; font-size: 21px; }
   .modal h4{ margin: 4px 0 10px; font-size: 12px; color: var(--ink-soft); text-transform: uppercase; letter-spacing: .4px; font-weight: 800; }
   .color-swatches{ display:flex; flex-wrap:wrap; gap:12px; margin-bottom: 20px; }
@@ -1303,6 +1320,7 @@
 
 <div class="modal-backdrop" id="newGroupModal">
   <div class="modal">
+    <button class="modal-x" data-close="newGroupModal" aria-label="Close">✕</button>
     <h3>Start a new group chat</h3>
     <p class="modal-sub">Give your group a name. You can add friends after you create it.</p>
     <div class="modal-msg" id="newGroupMsg"></div>
@@ -1319,6 +1337,7 @@
 
 <div class="modal-backdrop" id="renameModal">
   <div class="modal">
+    <button class="modal-x" data-close="renameModal" aria-label="Close">✕</button>
     <h3>Rename this group</h3>
     <p class="modal-sub">Pick a new name everyone in the chat will see.</p>
     <div class="modal-msg" id="renameMsg"></div>
@@ -1335,6 +1354,7 @@
 
 <div class="modal-backdrop" id="addPersonModal">
   <div class="modal">
+    <button class="modal-x" data-close="addPersonModal" aria-label="Close">✕</button>
     <h3>Add a friend</h3>
     <p class="modal-sub">Type their name to send them an invite — they'll need to accept it before joining.</p>
     <div class="modal-msg" id="addPersonMsg"></div>
@@ -1352,6 +1372,7 @@
 
 <div class="modal-backdrop" id="pollModal">
   <div class="modal">
+    <button class="modal-x" data-close="pollModal" aria-label="Close">✕</button>
     <h3>Create a poll</h3>
     <p class="modal-sub">Everyone in the chat can vote for one option.</p>
     <div class="modal-msg" id="pollMsg"></div>
@@ -1370,6 +1391,7 @@
 
 <div class="modal-backdrop" id="helpModal">
   <div class="modal">
+    <button class="modal-x" data-close="helpModal" aria-label="Close">✕</button>
     <h3>How Chat Club works</h3>
     <p class="modal-sub">Here's what everything does!</p>
     <div class="help-list">
@@ -1394,6 +1416,7 @@
 
 <div class="modal-backdrop" id="customizeModal">
   <div class="modal">
+    <button class="modal-x" data-close="customizeModal" aria-label="Close">✕</button>
     <h3>Customize</h3>
     <p class="modal-sub">Make it feel like yours!</p>
 
@@ -1492,7 +1515,7 @@
     "#EF476F","#118AB2","#06D6A0","#FFD166","#7209B7","#F72585","#4CC9F0","#2D6A4F"
   ];
   const BASE_THEME_VARS = {
-    "--bg":"#F7FAFB", "--surface":"#FFFFFF", "--ink":"#1B2A2E",
+    "--bg":"#F7FAFB", "--surface":"#FFFFFF", "--modal-surface":"#FFFFFF", "--ink":"#1B2A2E",
     "--ink-soft":"#5B6B6E", "--line":"#E3EDEC", "--bubble-them":"#EEF5F4",
     "--teal":"#1D7874", "--teal-dark":"#145653", "--sun":"#FFC93C"
   };
@@ -1504,7 +1527,7 @@
     { id: "blush",    name: "Blush",       swatch: "#FFF3F1", vars: { "--bg":"#FFF3F1" } },
     { id: "white",    name: "Pure white",  swatch: "#FFFFFF", vars: { "--bg":"#FFFFFF" } },
     { id: "black",    name: "Pure black",  swatch: "#000000", vars: {
-        "--bg":"#000000", "--surface":"#141414", "--ink":"#FFFFFF",
+        "--bg":"#000000", "--surface":"#141414", "--ink":"#FFFFFF", "--modal-surface":"#141414",
         "--ink-soft":"#B5B5B5", "--line":"#333333", "--bubble-them":"#1F1F1F",
         "--teal":"#3A3A3A", "--teal-dark":"#202020", "--sun":"#CCCCCC"
       } },
@@ -1517,7 +1540,7 @@
         "--line":"rgba(255,255,255,0.55)", "--bubble-them":"rgba(255,255,255,0.4)"
       } },
     { id: "glassdark", name: "Dark Glass",   swatch: "linear-gradient(135deg,#0f2027,#2c5364)", vars: {
-        "--bg":"#0f2027", "--surface":"rgba(24,27,32,0.45)", "--ink":"#F2F5F4",
+        "--bg":"#0f2027", "--surface":"rgba(24,27,32,0.45)", "--ink":"#F2F5F4", "--modal-surface":"#1B2A2E",
         "--ink-soft":"#B8C4C3", "--line":"rgba(255,255,255,0.15)", "--bubble-them":"rgba(255,255,255,0.12)"
       } },
     { id: "glasssunset", name: "Sunset Glass", swatch: "linear-gradient(135deg,#FF9A8B,#FF6A88)", vars: {
@@ -1525,7 +1548,7 @@
         "--line":"rgba(255,255,255,0.5)", "--bubble-them":"rgba(255,255,255,0.4)"
       } },
     { id: "glassforest", name: "Forest Glass", swatch: "linear-gradient(135deg,#134E5E,#71B280)", vars: {
-        "--bg":"#134E5E", "--surface":"rgba(255,255,255,0.18)", "--ink":"#F2F7F4",
+        "--bg":"#134E5E", "--surface":"rgba(255,255,255,0.18)", "--ink":"#F2F7F4", "--modal-surface":"#173A32",
         "--ink-soft":"#CBDCD4", "--line":"rgba(255,255,255,0.25)", "--bubble-them":"rgba(255,255,255,0.18)"
       } },
     { id: "glassviolet", name: "Violet Glass", swatch: "linear-gradient(135deg,#C471ED,#7B4397)", vars: {
@@ -1537,15 +1560,15 @@
         "--line":"rgba(255,255,255,0.5)", "--bubble-them":"rgba(255,255,255,0.4)"
       } },
     { id: "glassporsche", name: "Porsche Blue Glass", swatch: "linear-gradient(135deg,#00AEEF,#003153)", vars: {
-        "--bg":"#0072CE", "--surface":"rgba(255,255,255,0.22)", "--ink":"#F2FAFF",
+        "--bg":"#0072CE", "--surface":"rgba(255,255,255,0.22)", "--ink":"#F2FAFF", "--modal-surface":"#0B2A44",
         "--ink-soft":"#C7E6FA", "--line":"rgba(255,255,255,0.3)", "--bubble-them":"rgba(255,255,255,0.2)"
       } },
     { id: "glassaurora", name: "Aurora Glass", swatch: "linear-gradient(135deg,#00C9A7,#7B2FF7)", vars: {
-        "--bg":"#000C40", "--surface":"rgba(255,255,255,0.15)", "--ink":"#F2FBF9",
+        "--bg":"#000C40", "--surface":"rgba(255,255,255,0.15)", "--ink":"#F2FBF9", "--modal-surface":"#0B0F33",
         "--ink-soft":"#BFE9DF", "--line":"rgba(255,255,255,0.22)", "--bubble-them":"rgba(255,255,255,0.15)"
       } },
     { id: "glassparticles", name: "Drifting Particles", swatch: "#0B1220", vars: {
-        "--bg":"#0B1220", "--surface":"rgba(255,255,255,0.08)", "--ink":"#F2F5F9",
+        "--bg":"#0B1220", "--surface":"rgba(255,255,255,0.08)", "--ink":"#F2F5F9", "--modal-surface":"#12151C",
         "--ink-soft":"#A9B4C4", "--line":"rgba(255,255,255,0.18)", "--bubble-them":"rgba(255,255,255,0.12)"
       } },
     { id: "glasswaves", name: "Flowing Waves", swatch: "linear-gradient(135deg,#4FACFE,#43E97B)", vars: {
@@ -1553,7 +1576,7 @@
         "--line":"rgba(255,255,255,0.5)", "--bubble-them":"rgba(255,255,255,0.35)"
       } },
     { id: "glassfireflies", name: "Drifting Fireflies", swatch: "linear-gradient(160deg,#1B2735,#090A0F)", vars: {
-        "--bg":"#1B2735", "--surface":"rgba(255,255,255,0.08)", "--ink":"#F2F5F9",
+        "--bg":"#1B2735", "--surface":"rgba(255,255,255,0.08)", "--ink":"#F2F5F9", "--modal-surface":"#151B24",
         "--ink-soft":"#A9B4C4", "--line":"rgba(255,255,255,0.16)", "--bubble-them":"rgba(255,255,255,0.1)"
       } }
   ];
