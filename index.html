@@ -496,6 +496,7 @@
     background: var(--surface); border-radius: 20px;
     width:100%; max-width: 380px; padding: 26px;
     box-shadow: 0 24px 60px -20px rgba(20,86,83,0.35);
+    max-height: 100%; overflow-y: auto;
   }
   .modal-backdrop.show .modal{ animation: modal-pop-in .22s ease; }
   .modal h3{ margin: 0 0 4px; font-size: 21px; }
@@ -1411,6 +1412,10 @@
 
     <h4>Background theme</h4>
     <div class="color-swatches" id="bgThemeSwatches"></div>
+
+    <h4>Notifications</h4>
+    <p class="modal-sub" id="notifsSub">Get a popup + sound for new messages when this tab isn't focused.</p>
+    <button class="big-btn secondary" id="notifsToggleBtn" style="margin-bottom:20px;">Turn on notifications</button>
 
     <div class="modal-actions">
       <button class="big-btn secondary" data-close="customizeModal">Done</button>
@@ -4301,13 +4306,61 @@
     }, 3500);
   }
 
+  // Desktop notifications: a popup from the OS (not just this tab) for a
+  // new message while the tab is hidden — backgrounded or minimized, but
+  // the tab still has to be open somewhere. A fully-closed-tab version
+  // needs a server to push through Firebase Cloud Messaging; this is the
+  // no-backend version.
+  const NOTIFS_KEY = "chatclub_notifs_on";
+  function notifsSupported(){ return "Notification" in window; }
+  function notifsOn(){ return notifsSupported() && Notification.permission === "granted" && localStorage.getItem(NOTIFS_KEY) === "1"; }
+
   function notifyNewMessage(senderName, text){
     playPingSound();
     showToast(senderName, text || "");
     if(document.hidden){
       flashTitle(`🔔 ${senderName} sent a message`);
+      if(notifsOn()){
+        try{
+          const n = new Notification(senderName, { body: text || "sent a message", icon: "icons/icon-192.png", tag: "chatclub-msg" });
+          n.onclick = () => { window.focus(); n.close(); };
+        } catch(e){}
+      }
     }
   }
+
+  function updateNotifsBtn(){
+    const btn = $("notifsToggleBtn"), sub = $("notifsSub");
+    if(!notifsSupported()){
+      btn.textContent = "Not supported on this browser";
+      btn.disabled = true;
+      return;
+    }
+    if(Notification.permission === "denied"){
+      btn.textContent = "Blocked — allow notifications for this site in your browser";
+      btn.disabled = true;
+      return;
+    }
+    btn.disabled = false;
+    if(notifsOn()){
+      btn.textContent = "Turn off notifications";
+      sub.textContent = "You'll get a popup + sound for new messages when this tab isn't focused.";
+    } else {
+      btn.textContent = "Turn on notifications";
+      sub.textContent = "Get a popup + sound for new messages when this tab isn't focused.";
+    }
+  }
+
+  $("notifsToggleBtn").addEventListener("click", async () => {
+    if(notifsOn()){
+      localStorage.setItem(NOTIFS_KEY, "0");
+      updateNotifsBtn();
+      return;
+    }
+    const perm = Notification.permission === "granted" ? "granted" : await Notification.requestPermission();
+    if(perm === "granted") localStorage.setItem(NOTIFS_KEY, "1");
+    updateNotifsBtn();
+  });
 
   // =========================================================================
   //  CUSTOMIZE: your color + background theme
@@ -4325,6 +4378,7 @@
     renderBgThemeSwatches();
     $("renameMeInput").value = currentUser.displayName;
     $("renameMeMsg").classList.remove("show", "success");
+    updateNotifsBtn();
     openModal("customizeModal");
   });
 
