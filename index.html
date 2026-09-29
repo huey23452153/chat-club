@@ -485,15 +485,23 @@
   }
 
   /* ---------- Modal ---------- */
+  /* The backdrop itself is the scroll container for a modal taller than the
+     screen. Scrolling a box nested inside a fixed overlay (the old approach)
+     silently doesn't work on iPhone Safari, which left the bottom of
+     Customize unreachable. margin:auto on the modal centres it when it fits
+     and pins it to the top (still scrollable) when it doesn't. */
   .modal-backdrop{
     position:fixed; inset:0; background: rgba(27,42,46,0.45);
-    display:flex; align-items:center; justify-content:center; z-index:50; padding:20px;
+    display:flex; align-items:flex-start; justify-content:center; z-index:50; padding:20px;
+    padding-top: calc(20px + env(safe-area-inset-top));
+    padding-bottom: calc(20px + env(safe-area-inset-bottom));
+    overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
     opacity:0; visibility:hidden; pointer-events:none;
     transition: opacity .18s ease;
   }
   .modal-backdrop.show{ opacity:1; visibility:visible; pointer-events:auto; }
   .modal{
-    position: relative;
+    position: relative; margin: auto;
     /* A dedicated opaque surface, not the page's --surface: on "glass"
        background themes --surface is semi-transparent (by design, for the
        app chrome), which made a modal show the page behind it through and
@@ -501,15 +509,17 @@
     background: var(--modal-surface, var(--surface)); border-radius: 20px;
     width:100%; max-width: 380px; padding: 26px;
     box-shadow: 0 24px 60px -20px rgba(20,86,83,0.35);
-    max-height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch;
   }
   .modal-backdrop.show .modal{ animation: modal-pop-in .22s ease; }
-  /* Sticks to the top of the modal's own scroll area, so there's always a
-     way to close it even if the modal is taller than the screen and
-     scrolling doesn't happen (e.g. a stuck touch gesture) — you never have
-     to reach a button at the bottom to get out. */
+  @media (max-width: 480px){
+    .modal{ padding: 20px; }
+    .modal .color-swatches{ gap: 9px; margin-bottom: 16px; }
+    .modal .swatch{ width: 32px; height: 32px; }
+  }
+  /* Sticks near the top of the screen while the modal scrolls, so there's
+     always a way to close it without reaching a button at the bottom. */
   .modal-x{
-    position: sticky; top: -26px; float: right;
+    position: sticky; top: 8px; float: right;
     margin: -10px -10px 4px 10px;
     width: 34px; height: 34px; border-radius: 50%; z-index: 5;
     display:flex; align-items:center; justify-content:center;

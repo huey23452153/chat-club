@@ -79,3 +79,22 @@ test("a message from someone else pops a desktop notification when the tab is hi
   await ctxA.close();
   await ctxB.close();
 });
+
+test("on a small phone screen, the bottom of Customize is reachable and ✕ closes it", async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 667 });
+  await page.addInitScript(installFakeNotifications);
+  await signup(page, uniqueName("Quinn"));
+
+  await page.click("#customizeBtn");
+  await expect(page.locator("#customizeModal")).toHaveClass(/show/);
+
+  // The toggle at the very bottom can be scrolled to and used.
+  await page.locator("#notifsToggleBtn").scrollIntoViewIfNeeded();
+  await page.click("#notifsToggleBtn");
+  await expect(page.locator("#notifsToggleBtn")).toHaveText("Turn off notifications");
+
+  // Even scrolled all the way down, the ✕ is still on screen and closes it.
+  await expect(page.locator("#customizeModal .modal-x")).toBeInViewport();
+  await page.click("#customizeModal .modal-x");
+  await expect(page.locator("#customizeModal")).not.toHaveClass(/show/);
+});
