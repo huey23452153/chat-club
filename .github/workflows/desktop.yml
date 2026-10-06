@@ -36,8 +36,7 @@ jobs:
       - name: Build the installer
         run: |
           npm run dist 2>&1 | tee step.log
-          test "${PIPESTATUS[0]}" -eq 0 || { echo "::error::$(tail -c 1800 step.log | tr '
-' ' ')"; exit 1; }
+          test "${PIPESTATUS[0]}" -eq 0 || { echo "::error::$(tail -c 1800 step.log | paste -sd ' ' -)"; exit 1; }
       - name: Put the installers on the release
         run: |
           shopt -s nullglob
@@ -46,5 +45,4 @@ jobs:
             ls -la dist
             gh release upload "$TAG" dist/*.exe dist/*.dmg --clobber
           } 2>&1 | tee step.log
-          test "${PIPESTATUS[0]}" -eq 0 || { echo "::error::$(tail -c 1800 step.log | tr '
-' ' ')"; exit 1; }
+          test "${PIPESTATUS[0]}" -eq 0 || { echo "::error::$(tail -c 1800 step.log | paste -sd ' ' -)"; exit 1; }
