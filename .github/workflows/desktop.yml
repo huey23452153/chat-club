@@ -35,10 +35,12 @@ jobs:
       # what went wrong shows on the run's page without opening the log)
       - name: Build the installer
         run: |
+          set +e +o pipefail
           npm run dist 2>&1 | tee step.log
           test "${PIPESTATUS[0]}" -eq 0 || { echo "::error::$(tail -c 1800 step.log | paste -sd ' ' -)"; exit 1; }
       - name: Put the installers on the release
         run: |
+          set +e +o pipefail
           shopt -s nullglob
           {
             gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "Chat Club ${TAG#desktop-v}" --notes "Chat Club for Windows and Mac. Windows: run Chat-Club-Setup.exe. Mac: open the .dmg (arm64 for Apple silicon, x64 for Intel) and drag Chat Club to Applications." || sleep 10
