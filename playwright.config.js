@@ -4,13 +4,25 @@ const path = require('path');
 const { defineConfig, devices } = require('@playwright/test');
 
 // The Firestore emulator needs a Java runtime. If the machine doesn't have
-// one on PATH already, fall back to the portable JDK installed alongside
-// this project (see dev/README.md for how it got there).
-const portableJdkHome = path.join(os.homedir(), '.local/share/chat-club-jdk/jdk-21.0.12.1+1-jre/Contents/Home');
+// one on PATH already, fall back to a known install location: the portable
+// JDK on the Mac (see dev/README.md for how it got there), or Temurin's
+// default install folder on Windows.
+const fs = require('fs');
+function findJavaHome() {
+  const macPortable = path.join(os.homedir(), '.local/share/chat-club-jdk/jdk-21.0.12.1+1-jre/Contents/Home');
+  if (fs.existsSync(macPortable)) return macPortable;
+  const winAdoptium = 'C:\\Program Files\\Eclipse Adoptium';
+  if (process.platform === 'win32' && fs.existsSync(winAdoptium)) {
+    const jre = fs.readdirSync(winAdoptium).sort().reverse().find((d) => /^(jre|jdk)-2\d/.test(d));
+    if (jre) return path.join(winAdoptium, jre);
+  }
+  return null;
+}
+const javaHome = findJavaHome();
 const env = { ...process.env };
-if (require('fs').existsSync(portableJdkHome)) {
-  env.JAVA_HOME = portableJdkHome;
-  env.PATH = `${path.join(portableJdkHome, 'bin')}:${process.env.PATH}`;
+if (javaHome) {
+  env.JAVA_HOME = javaHome;
+  env.PATH = `${path.join(javaHome, 'bin')}${path.delimiter}${process.env.PATH}`;
 }
 
 module.exports = defineConfig({
@@ -39,7 +51,16 @@ module.exports = defineConfig({
     },
   },
   projects: [
-    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+    {
+      name: 'chromium',
+      use: {
+        ...devices['Desktop Chrome'],
+        // Playwright's bundled Chromium won't launch on the Windows PC
+        // ("side-by-side configuration is incorrect"), so use the
+        // preinstalled Microsoft Edge there — same Chromium engine.
+        ...(process.platform === 'win32' ? { channel: 'msedge' } : {}),
+      },
+    },
   ],
   webServer: [
     {
@@ -53,7 +74,7 @@ module.exports = defineConfig({
       env,
     },
     {
-      command: 'python3 -m http.server 8934',
+      command: 'node dev/static-server.js 8934',
       port: 8934,
       reuseExistingServer: !process.env.CI,
     },

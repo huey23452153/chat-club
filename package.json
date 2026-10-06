@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "scripts": {
-    "pretest": "sh dev/free-test-ports.sh",
+    "pretest": "node dev/free-test-ports.js",
     "test": "playwright test"
   },
   "devDependencies": {
