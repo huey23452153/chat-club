@@ -24,7 +24,7 @@
 
   <h2>What Chat Club stores</h2>
   <ul>
-    <li><strong>Your account:</strong> the name you pick and your password. The password is handled by Google Firebase Authentication; Chat Club never sees it. You are not asked for an email address, phone number or real name.</li>
+    <li><strong>Your account:</strong> the name you pick and your password. The password is handled by Google Firebase Authentication; Chat Club never sees it. You are not asked for a phone number or real name. An email address is optional: if you add one (to be able to reset your password) it is kept by Firebase Authentication, used only to log you in and send reset links, and not shown to other people.</li>
     <li><strong>Your chats:</strong> the groups you are in, and the messages, photos, GIFs, polls and reactions sent in them. They are stored in Google Firebase (Cloud Firestore) so the people in the group can see them. They are not end-to-end encrypted.</li>
     <li><strong>Activity inside a group:</strong> when you were last active (for the "online" dot), when you last read a group (for "Seen by" and unread counts), whether you are typing, and which chats you pinned.</li>
     <li><strong>Your settings:</strong> the theme and text colour you chose are kept on your own device. Your avatar colour is stored with your account so others can see it.</li>

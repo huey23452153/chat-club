@@ -1259,7 +1259,7 @@
 
       <div class="field">
         <label for="nameInput">Your name</label>
-        <input id="nameInput" type="text" placeholder="e.g. Sam" maxlength="24" autocomplete="username" />
+        <input id="nameInput" type="text" placeholder="e.g. Sam" maxlength="120" autocomplete="username" />
       </div>
       <div class="field">
         <label for="passwordInput">Password</label>
@@ -1271,6 +1271,7 @@
       <p class="switch-mode" id="switchModeText">
         New here? <a id="switchModeLink">Create an account</a>
       </p>
+      <p class="switch-mode" id="forgotText"><a id="forgotLink">Forgot password?</a></p>
     </div>
   </div>
 
@@ -1470,6 +1471,14 @@
     </div>
     <button class="big-btn secondary" id="saveMyNameBtn" style="margin-bottom:20px;">Save name</button>
 
+    <h4>Recovery email</h4>
+    <p class="modal-sub" id="recoveryEmailStatus" style="margin-bottom:8px;"></p>
+    <div class="modal-msg" id="recoveryEmailMsg"></div>
+    <div class="field">
+      <input id="recoveryEmailInput" type="email" maxlength="120" placeholder="you@example.com" autocomplete="email" />
+    </div>
+    <button class="big-btn secondary" id="saveRecoveryEmailBtn" style="margin-bottom:20px;">Save email</button>
+
     <h4>Your color</h4>
     <div class="color-swatches" id="avatarColorSwatches"></div>
 
@@ -1501,7 +1510,8 @@
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-app.js";
   import {
     getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword,
-    onAuthStateChanged, signOut, updateProfile, connectAuthEmulator
+    onAuthStateChanged, signOut, updateProfile, connectAuthEmulator,
+    sendPasswordResetEmail, verifyBeforeUpdateEmail
   } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-auth.js";
   import {
     getFirestore, doc, setDoc, getDoc, getDocs, collection, addDoc, updateDoc, deleteDoc,
@@ -1736,11 +1746,13 @@
       authSubtitle.textContent = "Pick a name and password to join Chat Club.";
       nameInput.placeholder = "Pick a name (e.g. Sam)";
       switchModeText.innerHTML = `Already have an account? <a id="switchModeLink">Log in</a>`;
+      $("forgotText").style.display = "none";
     } else {
       authSubmitBtn.textContent = "Log in";
       authSubtitle.textContent = "Log in to start chatting with your group.";
-      nameInput.placeholder = "e.g. Sam";
+      nameInput.placeholder = "e.g. Sam (or your email)";
       switchModeText.innerHTML = `New here? <a id="switchModeLink">Create an account</a>`;
+      $("forgotText").style.display = "";
     }
     // re-bind since innerHTML replaced the link element
     document.getElementById("switchModeLink").addEventListener("click", () => {
@@ -1748,6 +1760,39 @@
     });
   }
   switchModeLink.addEventListener("click", () => setAuthMode("signup"));
+
+  // ---- Recovery email -------------------------------------------------------
+  // An account is a name and a password: behind the scenes the name is turned
+  // into a made-up address (nameToAuthEmail), so there is nowhere to send a
+  // "reset your password" email. Adding a real email (Customize) swaps the
+  // made-up address for the real one. From then on Firebase can email a reset
+  // link, and you log in with the email — or still with your name on a device
+  // that has seen you log in before (it remembers which email goes with it).
+  const isMadeUpEmail = (email) => !email || email.toLowerCase().endsWith("@" + NAME_AUTH_DOMAIN);
+  const looksLikeEmail = (text) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text);
+  const loginEmailKey = (name) => "chatclub_login_email_" + name.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+
+  function rememberLoginEmail(name, email){
+    try{
+      if(isMadeUpEmail(email)) localStorage.removeItem(loginEmailKey(name));
+      else localStorage.setItem(loginEmailKey(name), email);
+    } catch(e){ /* private window: you just type the email next time */ }
+  }
+  function rememberedLoginEmail(name){
+    try{ return localStorage.getItem(loginEmailKey(name)) || ""; } catch(e){ return ""; }
+  }
+
+  $("forgotLink").addEventListener("click", async () => {
+    clearAuthMsg();
+    const typed = nameInput.value.trim();
+    const email = looksLikeEmail(typed) ? typed : rememberedLoginEmail(typed);
+    if(!email){
+      showAuthMsg("To reset by email, type the email you added to your account in the name box, then tap Forgot password again. Never added one? Ask huey to reset your password for you.");
+      return;
+    }
+    try{ await sendPasswordResetEmail(auth, email); } catch(e){ /* same answer either way, so nobody can test which emails have accounts */ }
+    showAuthMsg("If an account uses that email, a reset link is on its way. Check your inbox and your spam folder.");
+  });
 
   function friendlyAuthError(err){
     const code = err?.code || "";
@@ -1766,7 +1811,10 @@
     const password = passwordInput.value;
 
     if(!name || !password){ showAuthMsg("Please fill in your name and password."); return; }
-    const authEmail = nameToAuthEmail(name);
+    const typedEmail = looksLikeEmail(name);
+    if(typedEmail && authMode === "signup"){ showAuthMsg("Pick a name, not an email. You can add an email later in Customize."); return; }
+    if(!typedEmail && name.length > 24){ showAuthMsg("Names can be up to 24 letters long."); return; }
+    const authEmail = typedEmail ? name : nameToAuthEmail(name);
     if(authEmail === `@${NAME_AUTH_DOMAIN}`){ showAuthMsg("Please use a name with at least one letter or number in it."); return; }
 
     authSubmitBtn.disabled = true;
@@ -1782,10 +1830,18 @@
           createdAt: serverTimestamp()
         });
       } else {
-        await signInWithEmailAndPassword(auth, authEmail, password);
+        // an account that has added an email logs in with that; this device may know it
+        const remembered = typedEmail ? "" : rememberedLoginEmail(name);
+        try{
+          await signInWithEmailAndPassword(auth, remembered || authEmail, password);
+        } catch(err){
+          if(!remembered) throw err;
+          await signInWithEmailAndPassword(auth, authEmail, password);
+        }
       }
     } catch(err){
-      showAuthMsg(friendlyAuthError(err));
+      const wrong = /user-not-found|wrong-password|invalid-credential/.test(err?.code || "");
+      showAuthMsg(friendlyAuthError(err) + (authMode === "login" && wrong && !typedEmail ? " If you added an email to your account, log in with that email instead of your name." : ""));
     } finally {
       signingUpName = null;
       authSubmitBtn.disabled = false;
@@ -1793,6 +1849,35 @@
   });
 
   $("logoutBtn").addEventListener("click", () => signOut(auth));
+
+  function renderRecoveryEmail(){
+    const email = auth.currentUser && auth.currentUser.email;
+    $("recoveryEmailMsg").classList.remove("show", "success");
+    $("recoveryEmailInput").value = "";
+    $("recoveryEmailStatus").textContent = isMadeUpEmail(email)
+      ? "Optional. Add an email so you can reset your password if you forget it. Nobody else sees it."
+      : `Password reset emails go to ${email}. You log in with this email.`;
+  }
+
+  $("saveRecoveryEmailBtn").addEventListener("click", async () => {
+    const msgEl = $("recoveryEmailMsg");
+    const say = (text, ok) => { msgEl.textContent = text; msgEl.classList.add("show"); msgEl.classList.toggle("success", !!ok); };
+    const email = $("recoveryEmailInput").value.trim();
+    if(!looksLikeEmail(email)){ say("That doesn't look like an email address."); return; }
+    $("saveRecoveryEmailBtn").disabled = true;
+    try{
+      await verifyBeforeUpdateEmail(auth.currentUser, email);
+      say(`We sent a link to ${email}. Open it to finish. After that, log in with that email instead of your name. Your name in chats stays the same.`, true);
+    } catch(err){
+      const code = err?.code || "";
+      if(code.includes("requires-recent-login")) say("For safety, log out, log back in, and then try this again.");
+      else if(code.includes("email-already-in-use")) say("That email is already used by another account.");
+      else if(code.includes("invalid-email")) say("That doesn't look like an email address.");
+      else say("Couldn't send the email. Please try again in a bit.");
+    } finally {
+      $("saveRecoveryEmailBtn").disabled = false;
+    }
+  });
 
   // =========================================================================
   //  AUTH STATE -> LOAD APP
@@ -1803,6 +1888,7 @@
   let signingUpName = null;
   onAuthStateChanged(auth, async (user) => {
     if(user){
+      if(user.displayName) rememberLoginEmail(user.displayName, user.email);
       let displayName = user.displayName || signingUpName;
       if(!displayName){
         const snap = await getDoc(doc(db, "users", user.uid));
@@ -4614,6 +4700,7 @@
     $("renameMeInput").value = currentUser.displayName;
     $("renameMeMsg").classList.remove("show", "success");
     updateNotifsBtn();
+    renderRecoveryEmail();
     openModal("customizeModal");
   });
 
