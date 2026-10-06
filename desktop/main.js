@@ -50,7 +50,7 @@ app.on('will-quit', () => { if (helper) helper.kill(); });
 // New versions. Chat Club itself is the live site, so that is always current;
 // this looks for a newer build of the app around it: the newest release on
 // GitHub tagged desktop-vX.Y.Z, looked for when the app starts and then every
-// few hours. A newer one is downloaded quietly in the background (and checked
+// 30 minutes. A newer one is downloaded quietly in the background (and checked
 // against the size and SHA-256 GitHub lists for it); then:
 //   Windows  "Restart now" runs the installer silently and reopens the app.
 //            "Later" installs it when you close the app.
@@ -58,7 +58,7 @@ app.on('will-quit', () => { if (helper) helper.kill(); });
 //            is put in Downloads and opened, to drag over the old one.
 const RELEASES = 'https://api.github.com/repos/huey23452153/chat-club/releases?per_page=20';
 const RELEASES_PAGE = 'https://github.com/huey23452153/chat-club/releases';
-const CHECK_EVERY_MS = 6 * 60 * 60 * 1000;
+const CHECK_EVERY_MS = 30 * 60 * 1000;
 const DOWNLOAD_PREFIX = 'https://github.com/huey23452153/chat-club/releases/download/';
 const FAKE_OLD = process.argv.includes('--smoke-update'); // pretend to be an old version, to check the download
 let offeredVersion = null;
