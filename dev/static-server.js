@@ -30,8 +30,16 @@ const TYPES = {
 // a test can preview a page this server serves.
 process.env.PREVIEW_ALLOW_LOCAL = '1';
 const preview = require('../api/preview.js');
+// ...and the password-reset function, pointed at the local emulators.
+process.env.FIRESTORE_EMULATOR_HOST = '127.0.0.1:8080';
+process.env.FIREBASE_AUTH_EMULATOR_HOST = '127.0.0.1:9099';
+const reset = require('../api/reset.js');
 
 http.createServer((req, res) => {
+  if (req.url.startsWith('/api/reset')) {
+    reset(req, res);
+    return;
+  }
   if (req.url.startsWith('/api/preview')) {
     preview(req, res);
     return;

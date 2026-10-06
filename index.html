@@ -54,6 +54,16 @@
     display:flex; flex-direction:column; gap:8px;
     pointer-events: none;
   }
+  .reset-card{ cursor: default; }
+  .reset-card .toast-text{ white-space: normal; }
+  .reset-card-actions{ display:flex; gap:8px; margin-top:10px; }
+  .reset-card-actions button{
+    flex:1; border-radius:999px; padding:7px 10px; font-weight:800; font-size:13px;
+    border:1.5px solid var(--line); background: var(--bg); color: var(--ink);
+  }
+  .reset-card-actions button.allow{ background: var(--teal); border-color: var(--teal); color:#fff; }
+  .reset-box{ margin-top:14px; padding-top:14px; border-top:1px solid var(--line); }
+  .reset-box p{ margin:0 0 10px; font-size:14px; font-weight:700; color: var(--ink); }
   .toast{
     background: var(--surface); border: 1px solid var(--line);
     border-radius: 14px; padding: 12px 16px;
@@ -1272,6 +1282,13 @@
         New here? <a id="switchModeLink">Create an account</a>
       </p>
       <p class="switch-mode" id="forgotText"><a id="forgotLink">Forgot password?</a></p>
+      <div class="reset-box" id="resetBox" style="display:none;">
+        <p id="resetBoxText"></p>
+        <div class="field">
+          <input id="newPasswordInput" type="password" placeholder="New password (at least 6 characters)" autocomplete="new-password" maxlength="128" />
+        </div>
+        <button class="big-btn" id="setNewPasswordBtn">Set new password</button>
+      </div>
     </div>
   </div>
 
@@ -1782,12 +1799,155 @@
     try{ return localStorage.getItem(loginEmailKey(name)) || ""; } catch(e){ return ""; }
   }
 
+  // ---- Forgot password, with no email on the account -----------------------
+  // Such an account can't be reset by email, so the admin vouches for it:
+  //   1. Forgot password leaves a request: the name typed, and the SHA-256 of
+  //      a secret that stays in this browser.
+  //   2. The admin's Chat Club shows it with Allow / Deny.
+  //   3. On Allow, this browser (the only one with the secret) shows "pick a
+  //      new password" and sends it to /api/reset, which sets it.
+  // Anyone can leave a request; only the admin's account can list or answer
+  // them (firestore.rules), and only the server function can change a password.
+  const ADMIN_AUTH_EMAIL = "huey@" + NAME_AUTH_DOMAIN;
+  const MY_RESET_KEY = "chatclub_forgot_request"; // { id, secret, name } of the request this browser made
+  let resetRequestsUnsub = null;
+  let myResetUnsub = null;
+
+  function myResetRequest(){
+    try{
+      const r = JSON.parse(localStorage.getItem(MY_RESET_KEY) || "null");
+      return r && typeof r.id === "string" && typeof r.secret === "string" && typeof r.name === "string" ? r : null;
+    } catch(e){ return null; }
+  }
+  function forgetMyResetRequest(){
+    try{ localStorage.removeItem(MY_RESET_KEY); } catch(e){}
+    if(myResetUnsub){ myResetUnsub(); myResetUnsub = null; }
+    $("resetBox").style.display = "none";
+  }
+
+  async function tellAdminIForgot(name){
+    if(name.length > 24) return false;
+    const mine = myResetRequest();
+    if(mine && mine.name.toLowerCase() === name.toLowerCase()){ watchMyResetRequest(); return true; } // already asked
+    try{
+      const bytes = crypto.getRandomValues(new Uint8Array(24));
+      const secret = [...bytes].map(x => x.toString(16).padStart(2, "0")).join("");
+      const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(secret));
+      const keyHash = [...new Uint8Array(digest)].map(x => x.toString(16).padStart(2, "0")).join("");
+      const ref = await addDoc(collection(db, "resetRequests"), { name, keyHash, status: "pending", createdAt: serverTimestamp() });
+      forgetMyResetRequest();
+      localStorage.setItem(MY_RESET_KEY, JSON.stringify({ id: ref.id, secret, name }));
+      watchMyResetRequest();
+      return true;
+    } catch(e){
+      return false;
+    }
+  }
+
+  // this browser's own request: wait for the admin's answer
+  function watchMyResetRequest(){
+    const mine = myResetRequest();
+    if(!mine || myResetUnsub) return;
+    myResetUnsub = onSnapshot(doc(db, "resetRequests", mine.id), (snap) => {
+      if(auth.currentUser) return; // logged in some other way meanwhile
+      const status = snap.exists() ? snap.data().status : "gone";
+      if(status === "allowed"){
+        $("resetBoxText").textContent = `huey said yes. Pick a new password for ${mine.name}:`;
+        $("resetBox").style.display = "block";
+      } else if(status === "denied"){
+        forgetMyResetRequest();
+        showAuthMsg("huey said no to resetting that password. Talk to huey if that's a mistake.");
+      } else if(status === "gone" && !snap.metadata.fromCache){
+        forgetMyResetRequest();
+      }
+    }, () => { /* can't reach it right now: the box just doesn't appear */ });
+  }
+
+  $("setNewPasswordBtn").addEventListener("click", async () => {
+    const mine = myResetRequest();
+    const password = $("newPasswordInput").value;
+    if(!mine) return;
+    if(password.length < 6){ showAuthMsg("Please use a password with at least 6 characters."); return; }
+    clearAuthMsg();
+    $("setNewPasswordBtn").disabled = true;
+    try{
+      const res = await fetch("/api/reset", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: mine.id, secret: mine.secret, password })
+      });
+      const out = await res.json().catch(() => ({}));
+      if(!res.ok || !out.ok){ showAuthMsg(out.error || "Couldn't set the password. Please try again."); return; }
+      forgetMyResetRequest();
+      $("newPasswordInput").value = "";
+      await signInWithEmailAndPassword(auth, nameToAuthEmail(mine.name), password);
+    } catch(e){
+      showAuthMsg("Couldn't set the password. Please check your connection and try again.");
+    } finally {
+      $("setNewPasswordBtn").disabled = false;
+    }
+  });
+
+  // the admin's side: a card for every request waiting for an answer
+  function listenForResetRequests(){
+    if(resetRequestsUnsub || !auth.currentUser || auth.currentUser.email !== ADMIN_AUTH_EMAIL) return;
+    const seenKey = "chatclub_forgot_notes_seen";
+    let seen;
+    try{ seen = new Set(JSON.parse(localStorage.getItem(seenKey) || "[]")); } catch(e){ seen = new Set(); }
+    const cards = new Map(); // request id -> its card
+    resetRequestsUnsub = onSnapshot(collection(db, "resetRequests"), (snap) => {
+      const waiting = new Set();
+      snap.docs.forEach(d => {
+        const data = d.data();
+        const age = Date.now() - (data.createdAt?.toMillis?.() || Date.now());
+        if(age > 2 * 24 * 60 * 60 * 1000){ deleteDoc(d.ref).catch(() => {}); return; } // two days old: tidy it away
+        if(data.status !== "pending") return;
+        waiting.add(d.id);
+        const who = String(data.name || "Someone").slice(0, 24);
+        if(!cards.has(d.id)){
+          const el = document.createElement("div");
+          el.className = "toast reset-card";
+          el.innerHTML = `
+            <div class="toast-name">🔑 Forgot password</div>
+            <div class="toast-text"><strong>${escapeHtml(who)}</strong> wants to set a new password. Only allow it if you're sure it's really them.</div>
+            <div class="reset-card-actions">
+              <button class="allow">Allow</button>
+              <button class="deny">Deny</button>
+            </div>`;
+          el.querySelector(".allow").addEventListener("click", () => {
+            updateDoc(d.ref, { status: "allowed", allowedAt: serverTimestamp() }).catch(() => showToast("Couldn't allow that", "Please try again."));
+          });
+          el.querySelector(".deny").addEventListener("click", () => {
+            updateDoc(d.ref, { status: "denied" }).catch(() => showToast("Couldn't deny that", "Please try again."));
+          });
+          $("toastContainer").appendChild(el);
+          cards.set(d.id, el);
+        }
+        if(seen.has(d.id)) return;
+        seen.add(d.id);
+        playPingSound();
+        if(notifsOn()){
+          try{
+            const n = new Notification("🔑 Forgot password", { body: `${who} wants to set a new password. Open Chat Club to allow or deny.`, icon: "icons/icon-192.png", tag: "chatclub-forgot-" + d.id });
+            n.onclick = () => { window.focus(); n.close(); };
+          } catch(e){}
+        }
+      });
+      // answered (here or on another device), or gone: take the card away
+      for(const [id, el] of cards){ if(!waiting.has(id)){ el.remove(); cards.delete(id); } }
+      try{ localStorage.setItem(seenKey, JSON.stringify([...seen].slice(-200))); } catch(e){}
+    }, () => { /* not the admin after all: nothing to show */ });
+  }
+
   $("forgotLink").addEventListener("click", async () => {
     clearAuthMsg();
     const typed = nameInput.value.trim();
     const email = looksLikeEmail(typed) ? typed : rememberedLoginEmail(typed);
     if(!email){
-      showAuthMsg("To reset by email, type the email you added to your account in the name box, then tap Forgot password again. Never added one? Ask huey to reset your password for you.");
+      if(!typed){ showAuthMsg("Type your name (or the email you added to your account) in the box above, then tap Forgot password again."); return; }
+      const told = await tellAdminIForgot(typed);
+      showAuthMsg(told
+        ? "huey has been asked. Keep this page open (or come back to it on this device): as soon as huey allows it, you can pick a new password right here."
+        : "Ask huey to reset your password for you. (If you added an email to your account, type that in the name box instead to get a reset link.)");
       return;
     }
     try{ await sendPasswordResetEmail(auth, email); } catch(e){ /* same answer either way, so nobody can test which emails have accounts */ }
@@ -1920,6 +2080,8 @@
       passwordInput.value = ""; nameInput.value = "";
       showScreen("app");
       listenToMyGroups();
+      listenForResetRequests();
+      forgetMyResetRequest(); // logged in: no reset needed any more
       listenToMyInvites();
       startPresence();
     } else {
@@ -1927,6 +2089,9 @@
       currentUser = null;
       activeGroupId = null;
       if(groupsUnsub) groupsUnsub();
+      if(resetRequestsUnsub){ resetRequestsUnsub(); resetRequestsUnsub = null; }
+      document.querySelectorAll(".reset-card").forEach(el => el.remove());
+      watchMyResetRequest(); // back on the log in screen: is a request of ours waiting?
       if(invitesUnsub) invitesUnsub();
       if(messagesUnsub) messagesUnsub();
       if(typingUnsub) typingUnsub();

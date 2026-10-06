@@ -8,6 +8,27 @@ service cloud.firestore {
       allow create, update: if isSignedIn() && request.auth.uid == userId;
     }
 
+    // Forgot-password requests (see "Forgot password, with no email on the
+    // account" in index.html, and api/reset.js). Anyone, signed in or not, can
+    // leave one and can look at one whose id they know (ids are random; that
+    // is how the browser that asked sees the answer). Only the admin's account
+    // can list them, answer them or clear them. Changing the password itself
+    // is done by the server function, which these rules don't apply to.
+    match /resetRequests/{requestId} {
+      function isAdmin() { return isSignedIn() && request.auth.token.email == "huey@chatclub.local"; }
+      allow create: if request.resource.data.keys().hasOnly(["name", "keyHash", "status", "createdAt"])
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0 && request.resource.data.name.size() <= 24
+        && request.resource.data.keyHash is string && request.resource.data.keyHash.size() == 64
+        && request.resource.data.status == "pending"
+        && request.resource.data.createdAt == request.time;
+      allow get: if true;
+      allow list, delete: if isAdmin();
+      allow update: if isAdmin()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["status", "allowedAt"])
+        && request.resource.data.status in ["allowed", "denied"];
+    }
+
     match /groups/{groupId} {
       allow read: if isSignedIn() &&
         (request.auth.uid in resource.data.memberIds || request.auth.uid in resource.data.pendingIds);
