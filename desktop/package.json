@@ -64,7 +64,8 @@
     "asarUnpack": [
       "**/*.node",
       "node_modules/@nut-tree-fork/**"
-    ]
+    ],
+    "publish": null
   },
   "dependencies": {
     "@nut-tree-fork/nut-js": "^4.2.6",
