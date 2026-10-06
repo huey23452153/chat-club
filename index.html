@@ -229,6 +229,12 @@
   .chat-item.active{ background: var(--line); }
   .chat-item .avatar{ background: var(--teal-dark); width:34px; height:34px; font-size:14px; }
   .chat-item-name{ font-weight:700; font-size: 14.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .chat-item.unread .chat-item-name{ font-weight:800; }
+  .unread-badge{
+    margin-left:auto; flex-shrink:0; min-width:20px; height:20px; padding:0 6px;
+    border-radius:999px; background: var(--teal); color:#fff;
+    font-size:11.5px; font-weight:800; line-height:20px; text-align:center;
+  }
   .chat-item-sub{ font-size:12px; color: var(--ink-soft); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .empty-list{ padding: 18px 12px; color: var(--ink-soft); font-size: 14px; line-height:1.4; }
 
@@ -463,6 +469,33 @@
   .poll-option.mine .poll-option-fill{ background: rgba(29,120,116,0.35); }
   .poll-option-label{ position:relative; z-index:1; display:flex; justify-content:space-between; gap:8px; }
   .poll-total{ font-size:11px; color: var(--ink-soft); margin-top:2px; }
+  .msg-link{ color: inherit; text-decoration: underline; word-break: break-word; }
+  .bubble .msg-text + .msg-linked-image, .bubble .msg-text + .link-card{ margin-top:6px; }
+  .link-preview-slot{ display:none; }
+  .link-card{
+    display:flex; flex-direction:column; width: min(260px, 60vw);
+    border-radius:12px; overflow:hidden; text-decoration:none;
+    background: var(--surface); color: var(--ink); border: 1px solid var(--line);
+  }
+  .link-card-img{ display:block; width:100%; max-height:150px; object-fit:cover; }
+  .link-card-body{ display:flex; flex-direction:column; gap:2px; padding: 8px 10px; }
+  .link-card-site{ font-size:11px; font-weight:700; color: var(--ink-soft); text-transform:uppercase; letter-spacing:.04em; }
+  .link-card-title{ font-size:13.5px; font-weight:800; line-height:1.25; }
+  .link-card-desc{
+    font-size:12px; color: var(--ink-soft); line-height:1.3;
+    display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;
+  }
+
+  .chat-pin-btn{
+    flex-shrink:0; background:none; border:none; padding:4px; font-size:13px; line-height:1;
+    border-radius:50%; opacity:0; filter: grayscale(1); transition: opacity .15s ease;
+  }
+  .chat-item:hover .chat-pin-btn, .chat-pin-btn:focus-visible{ opacity:.55; }
+  .chat-pin-btn:hover{ opacity:1 !important; }
+  .chat-pin-btn.pinned{ opacity:1; filter:none; }
+  @media (hover: none){ .chat-pin-btn{ opacity:.4; } }
+  .chat-pin-btn{ margin-left:auto; }
+  .unread-badge ~ .chat-pin-btn{ margin-left:0; }
   .seen-indicator{
     font-size:11px; color: var(--ink-soft); text-align:right;
     padding: 2px 20px 0; min-height: 14px;
@@ -1472,7 +1505,7 @@
   } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-auth.js";
   import {
     getFirestore, doc, setDoc, getDoc, getDocs, collection, addDoc, updateDoc, deleteDoc,
-    query, where, orderBy, onSnapshot, serverTimestamp, arrayUnion, arrayRemove, deleteField,
+    query, where, orderBy, onSnapshot, serverTimestamp, arrayUnion, arrayRemove, deleteField, increment,
     connectFirestoreEmulator
   } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
 
@@ -1916,7 +1949,9 @@
     const q = query(collection(db, "groups"), where("memberIds", "array-contains", currentUser.uid));
     groupsUnsub = onSnapshot(q, (snap) => {
       myGroups = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      myGroups.sort((a,b) => (b.updatedAt?.toMillis?.() || 0) - (a.updatedAt?.toMillis?.() || 0));
+      // the chats you pinned first, then whichever was last active
+      myGroups.sort((a,b) => (isPinnedChat(b) - isPinnedChat(a))
+        || ((b.updatedAt?.toMillis?.() || 0) - (a.updatedAt?.toMillis?.() || 0)));
       const currentGroupIds = new Set(myGroups.map(g => g.id));
 
       // Compare against the previous snapshot (skip on the very first load)
@@ -1947,6 +1982,7 @@
       if(activeGroupId){
         const stillIn = myGroups.find(g => g.id === activeGroupId);
         if(stillIn){
+          if(stillIn.unread && stillIn.unread[currentUser.uid] > 0) markGroupRead(activeGroupId);
           renderChatHeader(stillIn);
           renderSeenIndicator();
         }
@@ -1963,17 +1999,67 @@
     list.innerHTML = "";
     myGroups.forEach(g => {
       const li = document.createElement("li");
-      li.className = "chat-item" + (g.id === activeGroupId ? " active" : "");
+      const unread = unreadCount(g);
+      const pinned = isPinnedChat(g);
+      li.className = "chat-item" + (g.id === activeGroupId ? " active" : "") + (unread ? " unread" : "");
       const online = onlineOthersCount(g);
       li.innerHTML = `
         <div class="avatar">${initials(g.name)}${online ? `<span class="presence-dot on avatar-presence" title="Someone's online"></span>` : ""}</div>
         <div style="min-width:0;">
           <div class="chat-item-name">${escapeHtml(g.name)}</div>
           <div class="chat-item-sub">${(g.memberIds||[]).length} people${online ? ` · <span class="online-text">${online} online</span>` : ""}</div>
-        </div>`;
+        </div>${unread ? `<span class="unread-badge" title="${unread} unread">${unread > 99 ? "99+" : unread}</span>` : ""}
+        <button class="chat-pin-btn${pinned ? " pinned" : ""}" title="${pinned ? "Unpin this chat" : "Pin this chat to the top"}" aria-label="${pinned ? "Unpin this chat" : "Pin this chat to the top"}">📌</button>`;
+      li.querySelector(".chat-pin-btn").addEventListener("click", (e) => {
+        e.stopPropagation(); // don't open the chat
+        togglePinnedChat(g);
+      });
       li.addEventListener("click", () => openGroup(g.id));
       list.appendChild(li);
     });
+    updateAppBadge();
+  }
+
+  // Pinned chats stay at the top of your own list (everyone pins their own:
+  // the group keeps the ids of the people who pinned it, in pinnedBy).
+  function isPinnedChat(g){
+    return !!currentUser && Array.isArray(g.pinnedBy) && g.pinnedBy.includes(currentUser.uid);
+  }
+
+  async function togglePinnedChat(g){
+    try{
+      await updateDoc(doc(db, "groups", g.id), {
+        pinnedBy: isPinnedChat(g) ? arrayRemove(currentUser.uid) : arrayUnion(currentUser.uid)
+      });
+    } catch(e){
+      showToast("Couldn't pin that chat", "Please try again.");
+    }
+  }
+
+  // How many messages in this chat I haven't seen. Senders add one for
+  // everybody else (unreadBump); opening the chat puts mine back to zero
+  // (markGroupRead). The chat that's open right now never counts.
+  function unreadCount(g){
+    if(!currentUser || g.id === activeGroupId) return 0;
+    const n = g.unread && g.unread[currentUser.uid];
+    return typeof n === "number" && n > 0 ? Math.floor(n) : 0;
+  }
+
+  // The group-doc update that goes with sending a message
+  function unreadBump(groupId){
+    const update = { updatedAt: serverTimestamp() };
+    const g = myGroups.find(gr => gr.id === groupId);
+    (g?.memberIds || []).forEach(uid => {
+      if(uid !== currentUser.uid) update[`unread.${uid}`] = increment(1);
+    });
+    return update;
+  }
+
+  // The number on the installed app's icon
+  function updateAppBadge(){
+    if(!navigator.setAppBadge) return;
+    const total = myGroups.reduce((sum, g) => sum + unreadCount(g), 0);
+    (total ? navigator.setAppBadge(total) : navigator.clearAppBadge()).catch(() => {});
   }
 
   // =========================================================================
@@ -2182,6 +2268,105 @@
     }
   });
 
+  // =========================================================================
+  //  LINKS, LINK PREVIEWS AND GIFS
+  // =========================================================================
+  // Links in a message are clickable. The first one also gets shown: a link
+  // straight to a picture or GIF as the picture itself, any other page as a
+  // small card with its title and picture (fetched by /api/preview, since a
+  // browser isn't allowed to read another site's page).
+  const URL_PATTERN = /\bhttps?:\/\/[^\s<>"']+/gi;
+  const IMAGE_LINK_PATTERN = /\.(gif|png|jpe?g|webp)$/i;
+  const PREVIEW_PENDING = "pending";
+  const previewCache = new Map(); // link -> PREVIEW_PENDING, the preview, or null (there isn't one)
+
+  function escapeAttr(str){
+    return String(str).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  function safeHttpUrl(raw){
+    try{
+      const u = new URL(raw);
+      return (u.protocol === "http:" || u.protocol === "https:") ? u.href : "";
+    } catch(e){ return ""; }
+  }
+
+  // a link at the end of a sentence shouldn't swallow the full stop
+  function trimLink(raw){ return raw.replace(/[).,!?:;]+$/, ""); }
+
+  function linkifyText(text){
+    let html = "", last = 0;
+    for(const match of text.matchAll(URL_PATTERN)){
+      const raw = trimLink(match[0]);
+      const href = safeHttpUrl(raw);
+      if(!href) continue;
+      html += escapeHtml(text.slice(last, match.index));
+      html += `<a class="msg-link" href="${escapeAttr(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(raw)}</a>`;
+      last = match.index + raw.length;
+    }
+    return html + escapeHtml(text.slice(last));
+  }
+
+  function firstLink(text){
+    const match = (text || "").match(URL_PATTERN);
+    return match ? safeHttpUrl(trimLink(match[0])) : "";
+  }
+
+  function isImageLink(href){
+    try{ return IMAGE_LINK_PATTERN.test(new URL(href).pathname); } catch(e){ return false; }
+  }
+
+  function linkedImageHtml(src){
+    return `<img class="msg-image msg-linked-image" src="${escapeAttr(src)}" alt="Shared picture" loading="lazy" referrerpolicy="no-referrer">`;
+  }
+
+  function linkCardHtml(href, data){
+    const image = safeHttpUrl(data.image);
+    // a GIF page (Giphy and the like): just show the GIF
+    if(image && isImageLink(image) && /\.gif$/i.test(new URL(image).pathname)) return linkedImageHtml(image);
+    return `<a class="link-card" href="${escapeAttr(href)}" target="_blank" rel="noopener noreferrer">
+        ${image ? `<img class="link-card-img" src="${escapeAttr(image)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : ""}
+        <span class="link-card-body">
+          <span class="link-card-site">${escapeHtml(data.site)}</span>
+          ${data.title ? `<span class="link-card-title">${escapeHtml(data.title)}</span>` : ""}
+          ${data.description ? `<span class="link-card-desc">${escapeHtml(data.description)}</span>` : ""}
+        </span>
+      </a>`;
+  }
+
+  function linkPreviewHtml(text){
+    const href = firstLink(text);
+    if(!href) return "";
+    if(isImageLink(href)) return linkedImageHtml(href);
+    if(!previewCache.has(href)) requestLinkPreview(href);
+    const data = previewCache.get(href);
+    if(data === PREVIEW_PENDING) return `<div class="link-preview-slot" data-preview-url="${escapeAttr(href)}"></div>`;
+    return data ? linkCardHtml(href, data) : "";
+  }
+
+  async function requestLinkPreview(href){
+    previewCache.set(href, PREVIEW_PENDING);
+    let data = null;
+    try{
+      const res = await fetch("/api/preview?url=" + encodeURIComponent(href));
+      const json = res.ok ? await res.json() : null;
+      if(json && !json.error && (json.title || json.image)){
+        data = {
+          title: String(json.title || ""), description: String(json.description || ""),
+          image: String(json.image || ""), site: String(json.site || "")
+        };
+      }
+    } catch(e){ /* no preview: the link itself is still there */ }
+    previewCache.set(href, data);
+    const el = $("messagesEl");
+    const wasNearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 60;
+    el.querySelectorAll(".link-preview-slot").forEach(slot => {
+      if(slot.dataset.previewUrl !== href) return;
+      if(data) slot.outerHTML = linkCardHtml(href, data); else slot.remove();
+    });
+    if(wasNearBottom) el.scrollTop = el.scrollHeight;
+  }
+
   const QUICK_EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "🎉"];
   let reactionPickerForId = null;
 
@@ -2193,6 +2378,7 @@
       const row = document.createElement("div");
       const mine = m.senderId === currentUser.uid;
       row.className = "msg-row " + (mine ? "mine" : "theirs");
+      row.dataset.msgId = m.id;
       const time = m.createdAt?.toDate ? m.createdAt.toDate() : null;
       const timeStr = time ? time.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", hour12: true }) : "";
       const editedTag = m.editedAt ? " · edited" : "";
@@ -2227,7 +2413,7 @@
         const imageHtml = isValidImageDataUrl(m.imageData)
           ? `<img class="msg-image" src="${m.imageData}" alt="Shared photo">`
           : "";
-        const textHtml = m.text ? `<div class="msg-text">${escapeHtml(m.text)}</div>` : "";
+        const textHtml = m.text ? `<div class="msg-text">${linkifyText(m.text)}</div>` + linkPreviewHtml(m.text) : "";
         const pollHtml = m.poll ? renderPoll(m.id, m.poll) : "";
         const bubbleInner = replyQuoteHtml + imageHtml + textHtml + pollHtml;
 
@@ -2255,7 +2441,8 @@
     if(!currentUser) return;
     try{
       await updateDoc(doc(db, "groups", groupId), {
-        [`lastRead.${currentUser.uid}`]: serverTimestamp()
+        [`lastRead.${currentUser.uid}`]: serverTimestamp(),
+        [`unread.${currentUser.uid}`]: 0
       });
     } catch(e){ /* not a big deal if this occasionally misses */ }
   }
@@ -2651,6 +2838,19 @@
     });
   }
 
+  // Photos are shrunk to a JPEG, which would freeze a GIF on its first
+  // frame — so a GIF small enough to fit in a message (Firestore allows 1MB
+  // a document, and base64 adds a third) is sent untouched.
+  const MAX_GIF_BYTES = 600 * 1024;
+  function readFileAsDataUrl(file){
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error("Couldn't read that file"));
+      reader.readAsDataURL(file);
+    });
+  }
+
   function clearPendingImage(){
     pendingImageDataUrl = null;
     $("imagePreviewStrip").classList.remove("show");
@@ -2663,7 +2863,9 @@
     $("photoInput").value = ""; // lets the same file be picked again later
     if(!file) return;
     try{
-      pendingImageDataUrl = await compressImageToDataUrl(file);
+      pendingImageDataUrl = (file.type === "image/gif" && file.size <= MAX_GIF_BYTES)
+        ? await readFileAsDataUrl(file)
+        : await compressImageToDataUrl(file);
     } catch(err){
       return;
     }
@@ -2713,7 +2915,7 @@
         };
       }
       await addDoc(collection(db, "groups", activeGroupId, "messages"), payload);
-      await updateDoc(doc(db, "groups", activeGroupId), { updatedAt: serverTimestamp() });
+      await updateDoc(doc(db, "groups", activeGroupId), unreadBump(activeGroupId));
     } catch(err){
       composerHint.textContent = "Message didn't send — please try again.";
       composerHint.classList.add("show");
@@ -4266,7 +4468,7 @@
         senderName: currentUser.displayName,
         createdAt: serverTimestamp()
       });
-      await updateDoc(doc(db, "groups", activeGroupId), { updatedAt: serverTimestamp() });
+      await updateDoc(doc(db, "groups", activeGroupId), unreadBump(activeGroupId));
       closeModal("pollModal");
     } catch(err){
       $("pollMsg").textContent = "Couldn't create the poll — please try again.";
