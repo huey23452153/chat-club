@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chat Club – Privacy</title>
+<style>
+  body{ font-family: system-ui, -apple-system, "Segoe UI", sans-serif; line-height:1.55; color:#1f2a2e; background:#f7f5f0; margin:0; padding: 32px 18px 64px; }
+  main{ max-width: 680px; margin: 0 auto; }
+  h1{ font-size: 28px; margin: 0 0 4px; }
+  h2{ font-size: 18px; margin: 28px 0 6px; }
+  p, li{ font-size: 15.5px; }
+  .date{ color:#5d6a6e; font-size:14px; margin:0 0 20px; }
+  a{ color:#0b7a75; }
+  @media (prefers-color-scheme: dark){ body{ background:#141a1c; color:#e6ecec; } .date{ color:#9aa7ab; } a{ color:#5fd1ca; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Chat Club privacy policy</h1>
+  <p class="date">Last updated 6 October 2026</p>
+
+  <p>Chat Club is a small group chat and video calling app, on the web at chat-club-one.vercel.app and as a desktop app for Windows and Mac. This page says what it keeps about you and where it goes.</p>
+
+  <h2>What Chat Club stores</h2>
+  <ul>
+    <li><strong>Your account:</strong> the name you pick and your password. The password is handled by Google Firebase Authentication; Chat Club never sees it. You are not asked for an email address, phone number or real name.</li>
+    <li><strong>Your chats:</strong> the groups you are in, and the messages, photos, GIFs, polls and reactions sent in them. They are stored in Google Firebase (Cloud Firestore) so the people in the group can see them. They are not end-to-end encrypted.</li>
+    <li><strong>Activity inside a group:</strong> when you were last active (for the "online" dot), when you last read a group (for "Seen by" and unread counts), whether you are typing, and which chats you pinned.</li>
+    <li><strong>Your settings:</strong> the theme and text colour you chose are kept on your own device. Your avatar colour is stored with your account so others can see it.</li>
+  </ul>
+
+  <h2>Calls, screen sharing and remote control</h2>
+  <ul>
+    <li>Video, audio, screen sharing and the whiteboard go directly between the people in the call where possible. When a direct connection can't be made they pass through a relay server (Metered's Open Relay). Calls are not recorded or stored by Chat Club.</li>
+    <li>To connect a call, your device's network addresses are shared with the other people in it and with the connection servers (Google and Metered STUN/TURN servers).</li>
+    <li>Remote control only works while you are sharing your whole screen and after you press Allow for that person. It stops when you stop sharing, press Stop, or end the call. The desktop app includes the helper that carries it out; it only listens on your own computer.</li>
+    <li>The camera and microphone are used only during calls you join.</li>
+  </ul>
+
+  <h2>Links and pictures from other sites</h2>
+  <p>When a message has a link, Chat Club's server fetches that page once to show its title and picture. Pictures and GIFs from links load from the site they are on, so that site sees your device's network address, as it would if you opened the link.</p>
+
+  <h2>Who else is involved</h2>
+  <ul>
+    <li>Google Firebase stores accounts and chats.</li>
+    <li>Vercel hosts the website and the link preview function.</li>
+    <li>Google Fonts supplies the fonts.</li>
+    <li>GitHub hosts the desktop app's downloads; the desktop app checks there for new versions.</li>
+  </ul>
+  <p>Chat Club has no ads, no analytics or tracking, and does not sell or share your information with anyone else.</p>
+
+  <h2>Deleting things</h2>
+  <ul>
+    <li>You can delete your own messages in the app. The owner of a group can delete the whole group.</li>
+    <li>To have your account and everything in it deleted, ask through the contact link below, giving your Chat Club name.</li>
+  </ul>
+
+  <h2>Children</h2>
+  <p>Chat Club is meant for chatting with people you already know. It is not directed at children under 13.</p>
+
+  <h2>Contact</h2>
+  <p>Questions or deletion requests: open an issue at <a href="https://github.com/huey23452153/chat-club/issues">github.com/huey23452153/chat-club/issues</a>. Please don't put private details in the issue itself.</p>
+</main>
+</body>
+</html>

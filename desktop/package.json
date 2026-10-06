@@ -10,7 +10,8 @@
     "start": "electron .",
     "smoke": "electron . --smoke",
     "dist": "electron-builder --publish never",
-    "predist": "node prepare.js"
+    "predist": "node prepare.js",
+    "dist:store": "node prepare.js && electron-builder --win appx --publish never"
   },
   "devDependencies": {
     "electron": "^33.2.0",
@@ -65,7 +66,18 @@
       "**/*.node",
       "node_modules/@nut-tree-fork/**"
     ],
-    "publish": null
+    "publish": null,
+    "appx": {
+      "identityName": "FILL-IN-FROM-PARTNER-CENTER",
+      "publisher": "CN=FILL-IN-FROM-PARTNER-CENTER",
+      "publisherDisplayName": "FILL-IN-FROM-PARTNER-CENTER",
+      "applicationId": "ChatClub",
+      "displayName": "Chat Club",
+      "languages": [
+        "en-US"
+      ],
+      "artifactName": "Chat-Club-Store.appx"
+    }
   },
   "dependencies": {
     "@nut-tree-fork/nut-js": "^4.2.6",

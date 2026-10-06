@@ -262,7 +262,10 @@ app.whenReady().then(async () => {
 
   startHelper();
   createWindow();
-  if (!SMOKE) {
+  // (the copy from the Microsoft Store is kept up to date by the Store)
+  if (process.windowsStore) {
+    // nothing to do
+  } else if (!SMOKE) {
     setTimeout(offerUpdate, 8000);
     setInterval(offerUpdate, CHECK_EVERY_MS);
   } else {
