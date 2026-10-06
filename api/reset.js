@@ -62,7 +62,14 @@ module.exports = async (req, res) => {
   }
 
   let lib;
-  try { lib = getAdmin(); } catch (e) { return send(503, { error: 'Password resets are not switched on yet. Ask huey.' }); }
+  try {
+    lib = getAdmin();
+  } catch (e) {
+    // why, for whoever is setting it up (never anything from the key itself)
+    const why = e.message === 'not set up' ? 'no key' : e.code === 'MODULE_NOT_FOUND' ? 'library missing'
+      : e instanceof SyntaxError ? 'the key is not valid JSON' : 'the key was not accepted';
+    return send(503, { error: 'Password resets are not switched on yet. Ask huey.', why });
+  }
 
   try {
     const ref = lib.firestore().collection('resetRequests').doc(id);
