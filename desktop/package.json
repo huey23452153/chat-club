@@ -1,0 +1,73 @@
+{
+  "name": "chat-club-desktop",
+  "productName": "Chat Club",
+  "version": "1.0.0",
+  "description": "Chat Club as a desktop app for Windows and Mac",
+  "author": "huey",
+  "private": true,
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "smoke": "electron . --smoke",
+    "dist": "electron-builder --publish never",
+    "predist": "node prepare.js"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "app.vercel.chat-club-one",
+    "productName": "Chat Club",
+    "files": [
+      "main.js",
+      "helper/server.js"
+    ],
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "icon": "build/icon.png",
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "artifactName": "Chat-Club-Setup.exe"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "category": "public.app-category.social-networking",
+      "identity": "-",
+      "artifactName": "Chat-Club-${arch}.dmg",
+      "extendInfo": {
+        "NSCameraUsageDescription": "Chat Club uses the camera for video calls.",
+        "NSMicrophoneUsageDescription": "Chat Club uses the microphone for calls."
+      }
+    },
+    "asarUnpack": [
+      "**/*.node",
+      "node_modules/@nut-tree-fork/**"
+    ]
+  },
+  "dependencies": {
+    "@nut-tree-fork/nut-js": "^4.2.6",
+    "ws": "^8.18.0"
+  }
+}
