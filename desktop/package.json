@@ -1,7 +1,7 @@
 {
   "name": "chat-club-desktop",
   "productName": "Chat Club",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Chat Club as a desktop app for Windows and Mac",
   "author": "huey",
   "private": true,
