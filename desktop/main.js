@@ -248,7 +248,8 @@ app.whenReady().then(async () => {
     try {
       const sources = await desktopCapturer.getSources({ types: ['screen'] });
       if (!sources.length) return callback({});
-      callback({ video: sources[0] });
+      // with the computer's sound, where the system can capture it (Windows)
+      callback(request.audioRequested && process.platform === 'win32' ? { video: sources[0], audio: 'loopback' } : { video: sources[0] });
     } catch (e) {
       callback({});
     }

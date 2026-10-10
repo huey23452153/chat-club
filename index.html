@@ -506,6 +506,10 @@
   @media (hover: none){ .chat-pin-btn{ opacity:.4; } }
   .chat-pin-btn{ margin-left:auto; }
   .unread-badge ~ .chat-pin-btn{ margin-left:0; }
+  .video-tile.sharing-sound::after{
+    content: "🔊"; position:absolute; top:8px; right:8px; font-size:15px;
+    background: rgba(0,0,0,0.55); border-radius:999px; padding:3px 7px;
+  }
   .seen-indicator{
     font-size:11px; color: var(--ink-soft); text-align:right;
     padding: 2px 20px 0; min-height: 14px;
@@ -1703,6 +1707,10 @@
   const MAX_CALL_PARTICIPANTS = 4; // mesh calling (no media server) tops out here
   let callPipCorner = "tr"; // remembered across calls so re-shrinking lands where you left it
   let screenStream = null;  // set only while actively sharing your screen
+  // Sharing a screen with its sound: the computer's sound and the microphone
+  // are mixed into one track, which takes the microphone's place on the call.
+  let shareAudioContext = null;
+  let shareAudioTrack = null;
   let isSharingScreen = false;
   let currentFacingMode = "user"; // "user" (front) or "environment" (back)
   // Remote control (see the REMOTE CONTROL section): a "control" data
@@ -3328,6 +3336,44 @@
     document.getElementById("tile-local").classList.toggle("back-camera", nextFacing === "environment");
   }
 
+  // What goes out as "my audio": the screen's sound mixed with the mic while
+  // sharing with sound, otherwise just the mic (or nothing).
+  function currentAudioTrack(){
+    return shareAudioTrack || localStream?.getAudioTracks()[0] || null;
+  }
+
+  // Mixes the shared screen's sound with the microphone. The mic keeps its
+  // own mute button: a muted mic track just adds silence to the mix.
+  function startShareAudio(){
+    const screenAudio = screenStream?.getAudioTracks()[0];
+    if(!screenAudio) return false;
+    try{
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      shareAudioContext = new Ctx();
+      const out = shareAudioContext.createMediaStreamDestination();
+      shareAudioContext.createMediaStreamSource(new MediaStream([screenAudio])).connect(out);
+      const mic = localStream?.getAudioTracks()[0];
+      if(mic) shareAudioContext.createMediaStreamSource(new MediaStream([mic])).connect(out);
+      shareAudioContext.resume?.();
+      shareAudioTrack = out.stream.getAudioTracks()[0];
+    } catch(err){
+      stopShareAudio();
+      return false;
+    }
+    for(const pc of peerConnections.values()) senderFor(pc, "audio")?.replaceTrack(shareAudioTrack);
+    return true;
+  }
+
+  function stopShareAudio(){
+    const wasOn = !!shareAudioTrack;
+    if(shareAudioTrack){ shareAudioTrack.stop(); shareAudioTrack = null; }
+    if(shareAudioContext){ shareAudioContext.close().catch(() => {}); shareAudioContext = null; }
+    if(wasOn){
+      const mic = localStream?.getAudioTracks()[0] || null;
+      for(const pc of peerConnections.values()) senderFor(pc, "audio")?.replaceTrack(mic);
+    }
+  }
+
   function currentVideoTrack(){
     return (isSharingScreen ? screenStream.getVideoTracks()[0] : localStream.getVideoTracks()[0]) || null;
   }
@@ -3341,9 +3387,16 @@
       // resolution (5120x2880 on a 200%-scaled 1440p monitor) — far more than
       // anyone watching needs, and heavy enough to go blurry and choppy
       // over a normal connection. 1440p/30fps keeps text sharp.
+      // audio: the computer's (or the tab's) sound comes along when the
+      // browser can capture it and the box for it is ticked in its picker.
+      // No processing (it's music and game sound, not a voice), and
+      // restrictOwnAudio leaves this page's own sound — the other people's
+      // voices — out of it, where the browser knows how, so they don't hear
+      // themselves back.
       stream = await navigator.mediaDevices.getDisplayMedia({
         video: { width: { max: 2560 }, height: { max: 1440 }, frameRate: { max: 30 } },
-        audio: false
+        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, restrictOwnAudio: true },
+        systemAudio: "include"
       });
     } catch(err){
       return; // user cancelled the browser's share picker — nothing to do
@@ -3361,8 +3414,13 @@
     for(const pc of peerConnections.values()){
       senderFor(pc, "video")?.replaceTrack(screenTrack);
     }
+    const withSound = startShareAudio();
     attachStream($("localVideo"), screenStream);
     document.getElementById("tile-local").classList.add("sharing-screen");
+    document.getElementById("tile-local").classList.toggle("sharing-sound", withSound);
+    showToast("Sharing your screen", withSound
+      ? "Everyone can hear your computer's sound too."
+      : "No sound is being shared. To share it, tick the sound box in the share window.");
     $("toggleScreenBtn").classList.add("active");
     $("toggleScreenBtn").title = "Stop sharing screen";
     updateLocalVideoPlaceholder();
@@ -3375,6 +3433,7 @@
     endBeingControlled(true); // nothing on screen to control any more
     hideControlBanner();
     isSharingScreen = false;
+    stopShareAudio();
     screenStream.getTracks().forEach(t => t.stop());
     screenStream = null;
 
@@ -3386,7 +3445,7 @@
     }
     if(localStream) attachStream($("localVideo"), localStream);
     const tile = document.getElementById("tile-local");
-    if(tile) tile.classList.remove("sharing-screen");
+    if(tile) tile.classList.remove("sharing-screen", "sharing-sound");
     $("toggleScreenBtn").classList.remove("active");
     $("toggleScreenBtn").title = "Share screen";
     updateLocalVideoPlaceholder();
@@ -3590,6 +3649,7 @@
     endBeingControlled(false);
     hideControlBanner();
     resetWhiteboard();
+    stopShareAudio();
     if(screenStream){ screenStream.getTracks().forEach(t => t.stop()); screenStream = null; }
     isSharingScreen = false;
     $("toggleScreenBtn").classList.remove("active");
@@ -3751,7 +3811,7 @@
     // Video sends whatever's currently active (screen or camera) — a peer
     // connection opened mid-share (e.g. someone new joining the call)
     // should start with the shared screen, not the camera underneath it.
-    pc.addTransceiver(localStream.getAudioTracks()[0] || "audio", { direction: "sendrecv", streams: [localStream] });
+    pc.addTransceiver(currentAudioTrack() || "audio", { direction: "sendrecv", streams: [localStream] });
     pc.addTransceiver(currentVideoTrack() || "video", { direction: "sendrecv", streams: [localStream] });
     handleRemoteTracks(pc, otherUid, otherName);
     watchIceConnectionState(pc, otherUid);
@@ -3794,7 +3854,7 @@
     // Fill the audio/video slots the offer created (addTrack reuses them).
     // A slot I have nothing for (no mic/camera) still goes two-way, so a
     // screen share can be swapped into it later without renegotiating.
-    for(const [kind, track] of [["audio", localStream.getAudioTracks()[0]], ["video", currentVideoTrack()]]){
+    for(const [kind, track] of [["audio", currentAudioTrack()], ["video", currentVideoTrack()]]){
       if(track){ pc.addTrack(track, localStream); continue; }
       const t = pc.getTransceivers().find(t => t.receiver.track?.kind === kind);
       if(t){ t.direction = "sendrecv"; t.sender.setStreams?.(localStream); }
