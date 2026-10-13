@@ -3386,7 +3386,10 @@
       // Uncapped, a high-DPI screen gets captured at its full physical
       // resolution (5120x2880 on a 200%-scaled 1440p monitor) — far more than
       // anyone watching needs, and heavy enough to go blurry and choppy
-      // over a normal connection. 1440p/30fps keeps text sharp.
+      // over a normal connection. 1080p/20fps is under a third of the work
+      // of 1440p/30fps for the computer doing the sharing (it has to shrink
+      // and compress every frame, usually while running the thing being
+      // shown), and text is still readable.
       // audio: the computer's (or the tab's) sound comes along when the
       // browser can capture it and the box for it is ticked in its picker.
       // No processing (it's music and game sound, not a voice), and
@@ -3394,7 +3397,7 @@
       // voices — out of it, where the browser knows how, so they don't hear
       // themselves back.
       stream = await navigator.mediaDevices.getDisplayMedia({
-        video: { width: { max: 2560 }, height: { max: 1440 }, frameRate: { max: 30 } },
+        video: { width: { max: 1920 }, height: { max: 1080 }, frameRate: { max: 20 } },
         audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, restrictOwnAudio: true },
         systemAudio: "include"
       });
