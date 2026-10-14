@@ -5,7 +5,8 @@
 // its own window and icon, the unread count on the icon, one copy at a time,
 // it remembers where its window was, and the remote-control helper is built in
 // (control-helper/server.js, which otherwise is a separate install).
-const { app, BrowserWindow, shell, session, desktopCapturer, Menu, systemPreferences, utilityProcess, dialog, net } = require('electron');
+const { app, BrowserWindow, shell, session, desktopCapturer, Menu, systemPreferences, utilityProcess, dialog, net, ipcMain } = require('electron');
+const faceWake = require('./facewake');
 const fs = require('fs');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
@@ -200,7 +201,7 @@ function createWindow() {
     title: 'Chat Club',
     backgroundColor: '#ffffff',
     autoHideMenuBar: true,
-    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, preload: path.join(__dirname, 'preload.js') },
   });
 
   // links to other sites open in the real browser, never inside the app
@@ -238,10 +239,22 @@ app.whenReady().then(async () => {
 
   // camera, microphone and notifications: yes for Chat Club itself, no for anything else
   const allowed = new Set(['media', 'notifications', 'fullscreen', 'clipboard-sanitized-write', 'display-capture']);
+  // (plus the camera for the app's own hidden face check, when that setting is on)
   session.defaultSession.setPermissionRequestHandler((wc, permission, callback, details) => {
+    if (faceWake.isCameraWindow(wc)) return callback(permission === 'media');
     callback(isSite(details.requestingUrl || wc.getURL()) && allowed.has(permission));
   });
-  session.defaultSession.setPermissionCheckHandler((wc, permission, origin) => isSite(origin) && allowed.has(permission));
+  session.defaultSession.setPermissionCheckHandler((wc, permission, origin) =>
+    (wc && faceWake.isCameraWindow(wc) && permission === 'media') || (isSite(origin) && allowed.has(permission)));
+
+  // the "wake screen when it sees me" switch in the site's settings
+  ipcMain.handle('facewake:get', (e) => isSite(e.senderFrame.url) && faceWake.isEnabled());
+  ipcMain.handle('facewake:set', (e, on) => isSite(e.senderFrame.url) ? faceWake.setEnabled(on) : false);
+  if (process.argv.includes('--facewake-test')) {
+    console.log('FACEWAKE faces seen: ' + await faceWake.selfTest());
+    return app.quit();
+  }
+  faceWake.start();
 
   // Share screen: the Mac's own picker where it has one, otherwise the main screen
   session.defaultSession.setDisplayMediaRequestHandler(async (request, callback) => {

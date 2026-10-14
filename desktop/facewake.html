@@ -1,0 +1,21 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Chat Club camera check</title>
+<video id="v" muted playsinline></video>
+<script>
+  // Hidden page the app uses to look for a face (see facewake.js). Nothing leaves the computer.
+  let stream = null;
+  let detector = null;
+  async function countFaces() {
+    if (!('FaceDetector' in window)) throw new Error('no face detector on this computer');
+    if (!stream) {
+      stream = await navigator.mediaDevices.getUserMedia({ video: { width: 320, height: 240 }, audio: false });
+      const v = document.getElementById('v');
+      v.srcObject = stream;
+      await v.play();
+      detector = new FaceDetector({ fastMode: true, maxDetectedFaces: 1 });
+    }
+    const faces = await detector.detect(document.getElementById('v'));
+    return faces.length;
+  }
+</script>

@@ -1500,6 +1500,12 @@
     </div>
     <button class="big-btn secondary" id="saveRecoveryEmailBtn" style="margin-bottom:20px;">Save email</button>
 
+    <h4>Wake screen when it sees you</h4>
+    <p class="modal-sub" id="faceWakeStatus" style="margin-bottom:8px;"></p>
+    <label id="faceWakeRow" style="display:none; align-items:center; gap:8px; margin-bottom:20px; cursor:pointer;">
+      <input type="checkbox" id="faceWakeToggle" /> On
+    </label>
+
     <h4>Your color</h4>
     <div class="color-swatches" id="avatarColorSwatches"></div>
 
@@ -2017,6 +2023,20 @@
   });
 
   $("logoutBtn").addEventListener("click", () => signOut(auth));
+
+  // Wake screen when it sees you: the desktop app does this (a web page can't run or turn the
+  // screen on while the computer is locked), so in a browser this only says where to find it.
+  const desktopApp = window.chatClubDesktop && window.chatClubDesktop.faceWake;
+  if(desktopApp){
+    $("faceWakeStatus").textContent = "While your computer is locked and the screen is off, the camera looks for a face and turns the screen back on. It stays locked. The picture never leaves your computer.";
+    $("faceWakeRow").style.display = "flex";
+    desktopApp.get().then(on => { $("faceWakeToggle").checked = !!on; }).catch(() => {});
+    $("faceWakeToggle").addEventListener("change", e => {
+      desktopApp.set(e.target.checked).then(on => { e.target.checked = !!on; }).catch(() => {});
+    });
+  } else {
+    $("faceWakeStatus").textContent = "Only in the Chat Club desktop app: a website can't turn your screen on.";
+  }
 
   function renderRecoveryEmail(){
     const email = auth.currentUser && auth.currentUser.email;
