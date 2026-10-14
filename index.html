@@ -1281,6 +1281,7 @@
       </div>
 
       <button class="big-btn" id="authSubmitBtn">Log in</button>
+      <button class="big-btn secondary" id="passkeyLoginBtn" style="display:none; margin-top:8px;">Log in with face, fingerprint or PIN</button>
 
       <p class="switch-mode" id="switchModeText">
         New here? <a id="switchModeLink">Create an account</a>
@@ -1500,6 +1501,11 @@
     </div>
     <button class="big-btn secondary" id="saveRecoveryEmailBtn" style="margin-bottom:20px;">Save email</button>
 
+    <h4>Quick log in (passkey)</h4>
+    <p class="modal-sub" id="passkeyStatus" style="margin-bottom:8px;">Log in on this device with its face, fingerprint or PIN instead of typing your password. Your face or fingerprint never leaves the device.</p>
+    <div class="modal-msg" id="passkeyMsg"></div>
+    <button class="big-btn secondary" id="addPasskeyBtn" style="margin-bottom:20px;">Set up on this device</button>
+
     <h4>Wake screen when it sees you</h4>
     <p class="modal-sub" id="faceWakeStatus" style="margin-bottom:8px;"></p>
     <label id="faceWakeRow" style="display:none; align-items:center; gap:8px; margin-bottom:20px; cursor:pointer;">
@@ -1538,7 +1544,7 @@
   import {
     getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword,
     onAuthStateChanged, signOut, updateProfile, connectAuthEmulator,
-    sendPasswordResetEmail, verifyBeforeUpdateEmail
+    sendPasswordResetEmail, verifyBeforeUpdateEmail, signInWithCustomToken
   } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-auth.js";
   import {
     getFirestore, doc, setDoc, getDoc, getDocs, collection, addDoc, updateDoc, deleteDoc,
@@ -2023,6 +2029,70 @@
   });
 
   $("logoutBtn").addEventListener("click", () => signOut(auth));
+
+  // Passkeys (api/passkey.js): the device's own face/fingerprint/PIN check unlocks a key it
+  // keeps, and the server swaps a signed check for a log-in token. Loaded only when used.
+  const passkeysWork = !!(window.PublicKeyCredential && navigator.credentials);
+  const loadWebAuthn = () => import("https://cdn.jsdelivr.net/npm/@simplewebauthn/browser@13.1.0/+esm");
+  async function passkeyApi(body){
+    const r = await fetch("/api/passkey", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const data = await r.json().catch(() => ({}));
+    if(!r.ok) throw new Error(data.error || "That didn't work. Please try again.");
+    return data;
+  }
+  // The person closing the device's prompt isn't an error worth shouting about.
+  const passkeyCancelled = err => /NotAllowedError|AbortError|cancel/i.test(`${err?.name} ${err?.message}`);
+
+  if(passkeysWork){
+    $("passkeyLoginBtn").style.display = "block";
+    $("passkeyLoginBtn").addEventListener("click", async () => {
+      clearAuthMsg();
+      const btn = $("passkeyLoginBtn");
+      btn.disabled = true;
+      try{
+        const { startAuthentication } = await loadWebAuthn();
+        const { options, ticket } = await passkeyApi({ action: "login-options" });
+        const response = await startAuthentication({ optionsJSON: options });
+        const { token } = await passkeyApi({ action: "login", ticket, response });
+        await signInWithCustomToken(auth, token);
+      } catch(err){
+        if(!passkeyCancelled(err)) showAuthMsg(err.message || "That didn't work. Please try again.");
+        else showAuthMsg("No passkey used. If you haven't set one up yet, log in with your password, then go to Customize → Quick log in.");
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  }
+
+  function showPasskeyMsg(text, ok){
+    const el = $("passkeyMsg");
+    el.textContent = text;
+    el.classList.add("show");
+    el.classList.toggle("success", !!ok);
+  }
+  if(!passkeysWork){
+    $("passkeyStatus").textContent = "This browser can't use passkeys. Try an up-to-date Chrome, Edge or Safari.";
+    $("addPasskeyBtn").style.display = "none";
+  }
+  $("addPasskeyBtn").addEventListener("click", async () => {
+    const btn = $("addPasskeyBtn");
+    btn.disabled = true;
+    $("passkeyMsg").classList.remove("show", "success");
+    try{
+      const { startRegistration } = await loadWebAuthn();
+      const idToken = await auth.currentUser.getIdToken();
+      const { options, ticket } = await passkeyApi({ action: "register-options", idToken });
+      const response = await startRegistration({ optionsJSON: options });
+      await passkeyApi({ action: "register", idToken, ticket, response });
+      showPasskeyMsg("Done! Next time, tap \"Log in with face, fingerprint or PIN\" on this device.", true);
+    } catch(err){
+      if(err?.name === "InvalidStateError") showPasskeyMsg("This device already has a passkey for your account. You're all set.", true);
+      else if(passkeyCancelled(err)) showPasskeyMsg("Cancelled. Nothing was changed.");
+      else showPasskeyMsg(err.message || "That didn't work. Please try again.");
+    } finally {
+      btn.disabled = false;
+    }
+  });
 
   // Wake screen when it sees you: the desktop app does this (a web page can't run or turn the
   // screen on while the computer is locked), so in a browser this only says where to find it.

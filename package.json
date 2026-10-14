@@ -10,6 +10,7 @@
     "@playwright/test": "^1.47.0"
   },
   "dependencies": {
+    "@simplewebauthn/server": "^13.3.3",
     "firebase-admin": "^13.0.0"
   }
 }
