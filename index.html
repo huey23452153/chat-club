@@ -2126,70 +2126,9 @@
     $("faceWakeStatus").textContent = "Only in the Chat Club desktop app: a website can't turn your screen on.";
   }
 
-  // Someone's looking alert. In the desktop app the app does it (it can also blur the screen or
-  // switch desktop, and keeps going with the window hidden). In a browser this page does it, while
-  // it's open in a tab (it needn't be the tab in front): a notification only, since a web page
-  // can't touch anything outside itself. Faces are found on this device; no picture is sent anywhere.
+  // Someone's looking alert: only the desktop app does it (it can also blur the whole screen or
+  // switch desktop, which a web page can't), so in a browser this only says where to find it.
   const appPrivacy = window.chatClubDesktop && window.chatClubDesktop.privacy;
-  const LOOK_KEY = "chatclub.lookAlert";
-  const lookAlert = { stream: null, detector: null, capture: null, ticker: null, busy: false, alerting: false, lastCrowd: 0 };
-
-  function showLookMsg(text){ const el = $("lookAlertMsg"); el.textContent = text; el.classList.toggle("show", !!text); }
-
-  async function startLookAlert(){
-    if(lookAlert.stream) return true;
-    try{
-      if("Notification" in window && Notification.permission === "default") await Notification.requestPermission();
-      const { FaceDetector, FilesetResolver } = await import("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs");
-      const files = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
-      lookAlert.detector = await FaceDetector.createFromOptions(files, {
-        baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite" },
-        runningMode: "IMAGE", minDetectionConfidence: 0.5,
-      });
-      lookAlert.stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: false });
-      lookAlert.capture = new ImageCapture(lookAlert.stream.getVideoTracks()[0]);
-      // a worker's timer keeps ticking when this tab is in the background, unlike the page's own
-      const tickSrc = URL.createObjectURL(new Blob(["setInterval(() => postMessage(0), 500)"], { type: "text/javascript" }));
-      lookAlert.ticker = new Worker(tickSrc);
-      lookAlert.ticker.onmessage = lookAlertTick;
-      return true;
-    } catch(err){
-      stopLookAlert();
-      showLookMsg(/Permission|NotAllowed/i.test(`${err?.name} ${err?.message}`)
-        ? "Chat Club wasn't allowed to use the camera. Allow it in the address bar, then switch this on again."
-        : "Couldn't start the camera check on this device.");
-      return false;
-    }
-  }
-  function stopLookAlert(){
-    if(lookAlert.ticker){ lookAlert.ticker.terminate(); lookAlert.ticker = null; }
-    if(lookAlert.stream){ lookAlert.stream.getTracks().forEach(t => t.stop()); lookAlert.stream = null; }
-    if(lookAlert.detector){ try{ lookAlert.detector.close(); } catch(e){} lookAlert.detector = null; }
-    lookAlert.capture = null; lookAlert.alerting = false;
-  }
-  async function lookAlertTick(){
-    if(lookAlert.busy || !lookAlert.capture) return;
-    lookAlert.busy = true;
-    try{
-      const frame = await lookAlert.capture.grabFrame();
-      const faces = lookAlert.detector.detect(frame).detections.length;
-      frame.close();
-      const now = Date.now();
-      if(faces >= 2){
-        lookAlert.lastCrowd = now;
-        if(!lookAlert.alerting){
-          lookAlert.alerting = true;
-          if("Notification" in window && Notification.permission === "granted")
-            new Notification("Someone is looking at your screen", { body: "The camera sees another face behind you.", tag: "look-alert" });
-          else showLookMsg("Someone is looking at your screen! (Allow notifications to get this as a pop-up.)");
-        }
-      } else if(lookAlert.alerting && now - lookAlert.lastCrowd >= 2000){
-        lookAlert.alerting = false;
-      }
-    } catch(e){ /* camera busy for a moment: next tick */ }
-    finally { lookAlert.busy = false; }
-  }
-
   if(appPrivacy){
     $("lookAlertStatus").textContent = "When the camera sees someone else behind you. Keeps working with the app in the background. Nothing is saved or sent anywhere.";
     $("lookAlertAppOptions").style.display = "block";
@@ -2208,25 +2147,9 @@
     $("lookAlertToggle").addEventListener("change", saveAppPrivacy);
     $("lookAlertMode").addEventListener("change", saveAppPrivacy);
     $("lookAlertBack").addEventListener("change", saveAppPrivacy);
-  } else if(!(navigator.mediaDevices && window.Worker && "ImageCapture" in window)){
-    $("lookAlertStatus").textContent = "This browser can't do this. Try Chrome or Edge, or the Chat Club desktop app.";
-    $("lookAlertToggle").disabled = true;
   } else {
-    $("lookAlertStatus").textContent = "A notification when the camera sees someone else behind you. Works while Chat Club is open in a tab, even in the background. The desktop app can also blur your screen or switch desktop. Nothing is saved or sent anywhere.";
-    let on = false;
-    try{ on = localStorage.getItem(LOOK_KEY) === "on"; } catch(e){}
-    $("lookAlertToggle").checked = on;
-    if(on) startLookAlert().then(ok => { if(!ok) $("lookAlertToggle").checked = false; });
-    $("lookAlertToggle").addEventListener("change", async e => {
-      showLookMsg("");
-      if(e.target.checked){
-        e.target.disabled = true;
-        const ok = await startLookAlert();
-        e.target.disabled = false;
-        e.target.checked = ok;
-      } else stopLookAlert();
-      try{ localStorage.setItem(LOOK_KEY, e.target.checked ? "on" : "off"); } catch(err){}
-    });
+    $("lookAlertStatus").textContent = "Only in the Chat Club desktop app: a website can't blur your screen or switch desktop.";
+    $("lookAlertToggle").disabled = true;
   }
 
   function renderRecoveryEmail(){
