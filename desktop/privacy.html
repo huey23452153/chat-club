@@ -1,0 +1,22 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Chat Club privacy check</title>
+<video id="v" muted playsinline></video>
+<script>
+  // Hidden page the app uses to count faces for "someone's looking" (see privacy.js). Nothing leaves the computer.
+  let stream = null;
+  let detector = null;
+  async function countFaces() {
+    if (!('FaceDetector' in window)) throw new Error('no face detector on this computer');
+    if (!stream) {
+      stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: false });
+      const v = document.getElementById('v');
+      v.srcObject = stream;
+      await v.play();
+      // not fast mode, so smaller faces further back are found too
+      detector = new FaceDetector({ fastMode: false, maxDetectedFaces: 5 });
+    }
+    const faces = await detector.detect(document.getElementById('v'));
+    return faces.length;
+  }
+</script>

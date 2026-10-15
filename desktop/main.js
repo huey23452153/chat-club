@@ -7,6 +7,7 @@
 // (control-helper/server.js, which otherwise is a separate install).
 const { app, BrowserWindow, shell, session, desktopCapturer, Menu, systemPreferences, utilityProcess, dialog, net, ipcMain } = require('electron');
 const faceWake = require('./facewake');
+const privacy = require('./privacy');
 const fs = require('fs');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
@@ -241,11 +242,11 @@ app.whenReady().then(async () => {
   const allowed = new Set(['media', 'notifications', 'fullscreen', 'clipboard-sanitized-write', 'display-capture']);
   // (plus the camera for the app's own hidden face check, when that setting is on)
   session.defaultSession.setPermissionRequestHandler((wc, permission, callback, details) => {
-    if (faceWake.isCameraWindow(wc)) return callback(permission === 'media');
+    if (faceWake.isCameraWindow(wc) || privacy.isCameraWindow(wc)) return callback(permission === 'media');
     callback(isSite(details.requestingUrl || wc.getURL()) && allowed.has(permission));
   });
   session.defaultSession.setPermissionCheckHandler((wc, permission, origin) =>
-    (wc && faceWake.isCameraWindow(wc) && permission === 'media') || (isSite(origin) && allowed.has(permission)));
+    (wc && (faceWake.isCameraWindow(wc) || privacy.isCameraWindow(wc)) && permission === 'media') || (isSite(origin) && allowed.has(permission)));
 
   // the "wake screen when it sees me" switch in the site's settings
   ipcMain.handle('facewake:get', (e) => isSite(e.senderFrame.url) && faceWake.isEnabled());
@@ -255,6 +256,11 @@ app.whenReady().then(async () => {
     return app.quit();
   }
   faceWake.start();
+
+  // the "someone's looking" settings in the site's settings
+  ipcMain.handle('privacy:get', (e) => isSite(e.senderFrame.url) ? privacy.get() : null);
+  ipcMain.handle('privacy:set', (e, next) => isSite(e.senderFrame.url) && next && typeof next === 'object' ? privacy.set(next) : null);
+  privacy.start();
 
   // Share screen: the Mac's own picker where it has one, otherwise the main screen
   session.defaultSession.setDisplayMediaRequestHandler(async (request, callback) => {

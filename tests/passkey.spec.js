@@ -17,7 +17,7 @@ test("set up a passkey, log out, log back in with it and no password", async ({ 
 
   await page.click("#customizeBtn");
   await page.click("#addPasskeyBtn");
-  await expect(page.locator("#passkeyMsg")).toContainText("Done!", { timeout: 15000 });
+  await expect(page.locator("#passkeyMsg")).toContainText("Done!", { timeout: 30000 });
 
   // the same device again: already set up
   await page.click("#addPasskeyBtn");

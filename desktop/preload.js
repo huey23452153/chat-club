@@ -6,4 +6,8 @@ contextBridge.exposeInMainWorld('chatClubDesktop', {
     get: () => ipcRenderer.invoke('facewake:get'),
     set: (on) => ipcRenderer.invoke('facewake:set', !!on),
   },
+  privacy: {
+    get: () => ipcRenderer.invoke('privacy:get'),
+    set: (s) => ipcRenderer.invoke('privacy:set', { enabled: !!s.enabled, mode: String(s.mode || ''), switchBack: s.switchBack !== false }),
+  },
 });
