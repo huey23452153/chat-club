@@ -56,6 +56,7 @@
     <div id="dist" data-meters="">--</div>
     <div id="status">Starting…</div>
     <button id="stopBtn" class="ghost">Stop</button>
+    <p id="debug" style="font-size:11px;word-break:break-all"></p>
   </div>
 </div>
 
@@ -146,6 +147,11 @@
     return (m / 1000).toFixed(2) + " km";
   }
 
+  const dbg = { fixes: 0, acc: "-", write: "-", room: "-", err: "" };
+  function showDebug(){
+    const el = $("debug");
+    if(el) el.textContent = `debug: gps fixes ${dbg.fixes} (±${dbg.acc} m) | saved: ${dbg.write} | room: ${dbg.room} | me: ${(uid||"").slice(0,5)}${dbg.err ? " | " + dbg.err : ""}`;
+  }
   function setStatus(text, cls){
     const s = $("status");
     s.textContent = text;
@@ -230,12 +236,13 @@
 
     const mine = doc(db, "arrowRooms", code, "players", uid);
     const onFix = pos => {
-      gotFix = true;
+      gotFix = true; dbg.fixes++; dbg.acc = Math.round(pos.coords.accuracy);
       myPos = { lat: pos.coords.latitude, lng: pos.coords.longitude, acc: pos.coords.accuracy, t: Date.now() };
       myFixes.push(myPos); if(myFixes.length > 8) myFixes.shift();
       if(Date.now() - lastWrite > 700){
         lastWrite = Date.now();
-        setDoc(mine, myPos).catch(() => {});
+        setDoc(mine, myPos).then(() => { dbg.write = "ok"; showDebug(); })
+          .catch(err => { dbg.write = "FAILED " + (err.code || err.message); showDebug(); });
       }
       render();
     };
@@ -253,7 +260,7 @@
     unsubPlayers = onSnapshot(collection(db, "arrowRooms", code, "players"), snap => {
       let latest = null, count = 0;
       snap.forEach(d => { count++; if(d.id !== uid) latest = d.data(); });
-      peopleInRoom = count;
+      peopleInRoom = count; dbg.room = count + " phone(s)"; showDebug();
       if(!latest){ otherFixes = []; otherPos = null; otherRemoteT = null; }
       else if(latest.t !== otherRemoteT){
         // stamp with OUR clock: the other phone's clock can be off by minutes
@@ -262,7 +269,8 @@
         otherFixes.push(otherPos); if(otherFixes.length > 8) otherFixes.shift();
       }
       render();
-    });
+    }, err => { dbg.err = "listen " + (err.code || err.message); showDebug(); });
+    setInterval(showDebug, 1000);
   }
 
   async function stop(){
