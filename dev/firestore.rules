@@ -66,5 +66,12 @@ service cloud.firestore {
         allow read, write: if isSignedIn() && request.auth.uid in parentGroup().memberIds;
       }
     }
+
+    // "Find Arrow" (arrow.html): each phone shares its position under a short
+    // room code. Only your own entry is writable; entries go away on Stop.
+    match /arrowRooms/{code}/players/{uid} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() && request.auth.uid == uid && code.size() <= 12;
+    }
   }
 }

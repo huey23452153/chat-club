@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Find Arrow</title>
+<style>
+  :root{
+    --bg:#0f1220; --surface:#1b2033; --text:#f2f4ff; --muted:#9aa3c7; --accent:#6c8cff; --good:#3ddc97; --warn:#ffb84d;
+  }
+  @media (prefers-color-scheme: light){
+    :root{ --bg:#f3f5fc; --surface:#fff; --text:#161a2e; --muted:#5b6385; --accent:#3d5afe; --good:#12a36a; --warn:#c77700; }
+  }
+  *{ box-sizing:border-box; }
+  body{ margin:0; min-height:100vh; background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    display:flex; align-items:center; justify-content:center; padding:16px; }
+  .card{ width:100%; max-width:380px; background:var(--surface); border-radius:20px; padding:24px; text-align:center;
+    box-shadow:0 8px 30px rgba(0,0,0,.25); }
+  h1{ margin:0 0 4px; font-size:22px; }
+  p{ color:var(--muted); margin:6px 0 14px; font-size:14px; line-height:1.4; }
+  input{ width:100%; padding:12px; font-size:20px; text-align:center; letter-spacing:4px; text-transform:uppercase;
+    border-radius:12px; border:2px solid var(--muted); background:transparent; color:var(--text); }
+  button{ width:100%; margin-top:10px; padding:14px; font-size:16px; font-weight:600; border:0; border-radius:12px;
+    background:var(--accent); color:#fff; cursor:pointer; }
+  button.ghost{ background:transparent; color:var(--accent); border:2px solid var(--accent); }
+  .hidden{ display:none; }
+  #arrowWrap{ width:220px; height:220px; margin:10px auto; display:flex; align-items:center; justify-content:center; }
+  #arrow{ width:160px; height:160px; transition:transform .15s linear; }
+  #dist{ font-size:40px; font-weight:700; margin:4px 0; }
+  #status{ min-height:20px; font-size:14px; color:var(--muted); }
+  #status.warn{ color:var(--warn); }
+  #status.good{ color:var(--good); }
+  #codeShow{ font-size:28px; letter-spacing:6px; font-weight:700; color:var(--accent); }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Find Arrow</h1>
+
+  <div id="joinView">
+    <p>Both phones open this page and use the <b>same code</b>. Only share the code with the person you want to find.</p>
+    <input id="codeInput" maxlength="6" placeholder="CODE" autocomplete="off" autocapitalize="characters">
+    <button id="startBtn">Start</button>
+    <button id="newBtn" class="ghost">Make a new code</button>
+    <p id="joinMsg"></p>
+  </div>
+
+  <div id="findView" class="hidden">
+    <div id="codeShow"></div>
+    <div id="arrowWrap">
+      <svg id="arrow" viewBox="0 0 100 100" data-rotation="0">
+        <polygon points="50,6 86,86 50,68 14,86" fill="var(--accent)"/>
+      </svg>
+    </div>
+    <div id="dist" data-meters="">--</div>
+    <div id="status">Starting…</div>
+    <button id="stopBtn" class="ghost">Stop</button>
+  </div>
+</div>
+
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-app.js";
+  import { getAuth, signInAnonymously, onAuthStateChanged, connectAuthEmulator }
+    from "https://www.gstatic.com/firebasejs/10.13.0/firebase-auth.js";
+  import { getFirestore, doc, setDoc, collection, onSnapshot, deleteDoc, connectFirestoreEmulator }
+    from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyCbsdyjuvvB_-7AJQG9CqbNVATqfOMuJHs",
+    authDomain: "school-chat-9e4d8.firebaseapp.com",
+    projectId: "school-chat-9e4d8",
+    storageBucket: "school-chat-9e4d8.firebasestorage.app",
+    messagingSenderId: "212270956439",
+    appId: "1:212270956439:web:7ac2d2a6d9ca9283ee0ed2"
+  };
+  const app = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+  const db = getFirestore(app);
+  if(location.hostname === "localhost" || location.hostname === "127.0.0.1"){
+    connectAuthEmulator(auth, "http://localhost:9099", { disableWarnings: true });
+    connectFirestoreEmulator(db, "localhost", 8080);
+  }
+
+  const $ = id => document.getElementById(id);
+  const STALE_MS = 60 * 1000;      // ignore a position older than this
+  const WEAK_GPS_M = 30;           // gps worse than this = warn
+  const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+  let uid = null, code = null, myPos = null, otherPos = null, heading = null;
+  let watchId = null, unsubPlayers = null, lastWrite = 0;
+
+  function makeCode(){
+    let c = "";
+    const r = crypto.getRandomValues(new Uint8Array(6));
+    for(const b of r) c += CODE_CHARS[b % CODE_CHARS.length];
+    return c;
+  }
+
+  function toRad(d){ return d * Math.PI / 180; }
+  function toDeg(r){ return r * 180 / Math.PI; }
+  // distance in metres between two lat/lng points
+  function distanceM(a, b){
+    const R = 6371000;
+    const dLat = toRad(b.lat - a.lat), dLng = toRad(b.lng - a.lng);
+    const h = Math.sin(dLat/2)**2 + Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLng/2)**2;
+    return 2 * R * Math.asin(Math.sqrt(h));
+  }
+  // compass bearing (0 = north, clockwise) from a to b
+  function bearingDeg(a, b){
+    const y = Math.sin(toRad(b.lng - a.lng)) * Math.cos(toRad(b.lat));
+    const x = Math.cos(toRad(a.lat)) * Math.sin(toRad(b.lat)) -
+              Math.sin(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.cos(toRad(b.lng - a.lng));
+    return (toDeg(Math.atan2(y, x)) + 360) % 360;
+  }
+  function fmtDistance(m){
+    if(m < 10) return m.toFixed(1) + " m";
+    if(m < 1000) return Math.round(m) + " m";
+    return (m / 1000).toFixed(2) + " km";
+  }
+
+  function setStatus(text, cls){
+    const s = $("status");
+    s.textContent = text;
+    s.className = cls || "";
+  }
+
+  function render(){
+    if(!myPos){ setStatus("Finding your location…"); return; }
+    if(!otherPos || Date.now() - otherPos.t > STALE_MS){
+      setStatus("Waiting for the other phone…");
+      $("dist").textContent = "--";
+      $("dist").dataset.meters = "";
+      return;
+    }
+    const d = distanceM(myPos, otherPos);
+    const b = bearingDeg(myPos, otherPos);
+    const rot = heading == null ? b : (b - heading + 360) % 360;
+    $("arrow").style.transform = `rotate(${rot}deg)`;
+    $("arrow").dataset.rotation = String(Math.round(rot));
+    $("dist").textContent = fmtDistance(d);
+    $("dist").dataset.meters = String(Math.round(d));
+    const worst = Math.max(myPos.acc || 0, otherPos.acc || 0);
+    if(heading == null) setStatus("No compass: arrow points North-up", "warn");
+    else if(worst > WEAK_GPS_M) setStatus("GPS is weak (±" + Math.round(worst) + " m). Go outside for a better arrow.", "warn");
+    else setStatus(d < 5 ? "You're right next to each other!" : "Follow the arrow", "good");
+  }
+
+  // compass: iOS gives webkitCompassHeading (already clockwise from north);
+  // Android gives alpha (counter-clockwise), best from deviceorientationabsolute
+  function onOrientation(e){
+    if(typeof e.webkitCompassHeading === "number") heading = e.webkitCompassHeading;
+    else if(e.absolute && typeof e.alpha === "number") heading = (360 - e.alpha) % 360;
+    else return;
+    render();
+  }
+
+  async function askCompass(){
+    try{
+      if(typeof DeviceOrientationEvent !== "undefined" && typeof DeviceOrientationEvent.requestPermission === "function"){
+        const r = await DeviceOrientationEvent.requestPermission();
+        if(r !== "granted") return;
+      }
+    } catch(err){ return; }
+    window.addEventListener("deviceorientationabsolute", onOrientation, true);
+    window.addEventListener("deviceorientation", onOrientation, true);
+  }
+
+  async function ensureSignedIn(){
+    if(auth.currentUser) return auth.currentUser.uid;
+    return new Promise((resolve, reject) => {
+      const off = onAuthStateChanged(auth, async u => {
+        off();
+        if(u) return resolve(u.uid);
+        try{ resolve((await signInAnonymously(auth)).user.uid); }
+        catch(err){ reject(err); }
+      });
+    });
+  }
+
+  async function start(c){
+    $("joinMsg").textContent = "";
+    if(!navigator.geolocation){ $("joinMsg").textContent = "This browser has no location."; return; }
+    try{ uid = await ensureSignedIn(); }
+    catch(err){ $("joinMsg").textContent = "Couldn't sign in (" + (err.code || err.message) + ")."; return; }
+    code = c;
+    $("joinView").classList.add("hidden");
+    $("findView").classList.remove("hidden");
+    $("codeShow").textContent = code;
+    setStatus("Finding your location…");
+    askCompass(); // after the tap, so iOS allows the prompt
+
+    const mine = doc(db, "arrowRooms", code, "players", uid);
+    watchId = navigator.geolocation.watchPosition(pos => {
+      myPos = { lat: pos.coords.latitude, lng: pos.coords.longitude, acc: pos.coords.accuracy, t: Date.now() };
+      if(Date.now() - lastWrite > 1500){
+        lastWrite = Date.now();
+        setDoc(mine, myPos).catch(() => {});
+      }
+      render();
+    }, err => {
+      setStatus(err.code === 1 ? "Location is blocked. Allow it in your browser settings." : "Can't get your location.", "warn");
+    }, { enableHighAccuracy: true, maximumAge: 1000, timeout: 20000 });
+
+    unsubPlayers = onSnapshot(collection(db, "arrowRooms", code, "players"), snap => {
+      otherPos = null;
+      snap.forEach(d => { if(d.id !== uid) otherPos = d.data(); });
+      render();
+    });
+  }
+
+  async function stop(){
+    if(watchId != null) navigator.geolocation.clearWatch(watchId);
+    if(unsubPlayers) unsubPlayers();
+    window.removeEventListener("deviceorientationabsolute", onOrientation, true);
+    window.removeEventListener("deviceorientation", onOrientation, true);
+    try{ await deleteDoc(doc(db, "arrowRooms", code, "players", uid)); } catch(err){}
+    watchId = unsubPlayers = null; myPos = otherPos = heading = null;
+    $("findView").classList.add("hidden");
+    $("joinView").classList.remove("hidden");
+  }
+
+  $("newBtn").onclick = () => { $("codeInput").value = makeCode(); };
+  $("startBtn").onclick = () => {
+    const c = $("codeInput").value.trim().toUpperCase();
+    if(c.length < 4){ $("joinMsg").textContent = "Type a code or make a new one."; return; }
+    start(c);
+  };
+  $("stopBtn").onclick = stop;
+</script>
+</body>
+</html>
