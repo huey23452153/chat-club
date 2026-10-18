@@ -12,10 +12,13 @@ async function phone(browser, geo) {
 }
 
 async function compass(page, deg) {
+  // the page smooths the compass, so feed it a steady reading for a moment
   await page.evaluate(d => {
-    const e = new Event("deviceorientation");
-    e.webkitCompassHeading = d;
-    window.dispatchEvent(e);
+    for (let i = 0; i < 40; i++) {
+      const e = new Event("deviceorientation");
+      e.webkitCompassHeading = d;
+      window.dispatchEvent(e);
+    }
   }, deg);
 }
 

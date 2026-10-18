@@ -89,6 +89,7 @@
   const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
   let uid = null, code = null, myPos = null, otherPos = null, heading = null;
+  let myFixes = [], otherFixes = [], shownRot = null;
   let watchId = null, unsubPlayers = null, lastWrite = 0;
 
   function makeCode(){
@@ -114,6 +115,31 @@
               Math.sin(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.cos(toRad(b.lng - a.lng));
     return (toDeg(Math.atan2(y, x)) + 360) % 360;
   }
+  // Smooth the last few gps fixes: newer and more accurate fixes count more,
+  // and any fix that is badly off is ignored. Keeps the arrow from jumping.
+  const FIX_WINDOW_MS = 6000, BAD_FIX_M = 40;
+  function smoothed(fixes){
+    const now = Date.now();
+    const good = fixes.filter(f => now - f.t < FIX_WINDOW_MS && (f.acc || 0) <= BAD_FIX_M);
+    const use = good.length ? good : fixes.slice(-1);
+    let w = 0, lat = 0, lng = 0;
+    for(const f of use){
+      const a = Math.max(f.acc || 5, 3);
+      const k = 1 / (a * a);
+      w += k; lat += f.lat * k; lng += f.lng * k;
+    }
+    const last = use[use.length - 1];
+    return { lat: lat / w, lng: lng / w, acc: Math.min(...use.map(f => f.acc || 5)), t: last.t };
+  }
+  // Compass heading goes through a circular low-pass so 359 -> 1 doesn't swing
+  // the long way round and small hand shakes don't wobble the arrow.
+  let hsin = null, hcos = null;
+  function smoothHeading(deg){
+    const r = toRad(deg);
+    if(hsin == null){ hsin = Math.sin(r); hcos = Math.cos(r); }
+    else { hsin += 0.25 * (Math.sin(r) - hsin); hcos += 0.25 * (Math.cos(r) - hcos); }
+    return (toDeg(Math.atan2(hsin, hcos)) + 360) % 360;
+  }
   function fmtDistance(m){
     if(m < 10) return m.toFixed(1) + " m";
     if(m < 1000) return Math.round(m) + " m";
@@ -134,17 +160,21 @@
       $("dist").dataset.meters = "";
       return;
     }
-    const d = distanceM(myPos, otherPos);
-    const b = bearingDeg(myPos, otherPos);
+    const me = smoothed(myFixes), other = smoothed(otherFixes);
+    const d = distanceM(me, other);
+    const b = bearingDeg(me, other);
     const rot = heading == null ? b : (b - heading + 360) % 360;
     const close = d < CLOSE_M;
-    $("arrow").style.transform = `rotate(${rot}deg)`;
-    $("arrow").dataset.rotation = String(Math.round(rot));
+    // turn the short way round: never spin 350 degrees to go from 5 to 355
+    if(shownRot == null) shownRot = rot;
+    shownRot += ((rot - shownRot + 540) % 360) - 180;
+    $("arrow").style.transform = `rotate(${shownRot}deg)`;
+    $("arrow").dataset.rotation = String(Math.round(rot) % 360);
     $("arrow").style.opacity = close ? "0.15" : "1";
     $("arrow").dataset.close = close ? "1" : "0";
     $("dist").textContent = fmtDistance(d);
     $("dist").dataset.meters = String(Math.round(d));
-    const worst = Math.max(myPos.acc || 0, otherPos.acc || 0);
+    const worst = Math.max(me.acc || 0, other.acc || 0);
     if(close) setStatus("You're here! Look around 👀", "good");
     else if(heading == null) setStatus("No compass: arrow points North-up", "warn");
     else if(worst > WEAK_GPS_M) setStatus("GPS is weak (±" + Math.round(worst) + " m). Go outside for a better arrow.", "warn");
@@ -154,8 +184,8 @@
   // compass: iOS gives webkitCompassHeading (already clockwise from north);
   // Android gives alpha (counter-clockwise), best from deviceorientationabsolute
   function onOrientation(e){
-    if(typeof e.webkitCompassHeading === "number") heading = e.webkitCompassHeading;
-    else if(e.absolute && typeof e.alpha === "number") heading = (360 - e.alpha) % 360;
+    if(typeof e.webkitCompassHeading === "number") heading = smoothHeading(e.webkitCompassHeading);
+    else if(e.absolute && typeof e.alpha === "number") heading = smoothHeading((360 - e.alpha) % 360);
     else return;
     render();
   }
@@ -198,6 +228,7 @@
     const mine = doc(db, "arrowRooms", code, "players", uid);
     watchId = navigator.geolocation.watchPosition(pos => {
       myPos = { lat: pos.coords.latitude, lng: pos.coords.longitude, acc: pos.coords.accuracy, t: Date.now() };
+      myFixes.push(myPos); if(myFixes.length > 8) myFixes.shift();
       if(Date.now() - lastWrite > 700){
         lastWrite = Date.now();
         setDoc(mine, myPos).catch(() => {});
@@ -208,8 +239,11 @@
     }, { enableHighAccuracy: true, maximumAge: 1000, timeout: 20000 });
 
     unsubPlayers = onSnapshot(collection(db, "arrowRooms", code, "players"), snap => {
-      otherPos = null;
-      snap.forEach(d => { if(d.id !== uid) otherPos = d.data(); });
+      let latest = null;
+      snap.forEach(d => { if(d.id !== uid) latest = d.data(); });
+      if(!latest) otherFixes = [];
+      else if(!otherPos || latest.t !== otherPos.t){ otherFixes.push(latest); if(otherFixes.length > 8) otherFixes.shift(); }
+      otherPos = latest;
       render();
     });
   }
@@ -221,6 +255,7 @@
     window.removeEventListener("deviceorientation", onOrientation, true);
     try{ await deleteDoc(doc(db, "arrowRooms", code, "players", uid)); } catch(err){}
     watchId = unsubPlayers = null; myPos = otherPos = heading = null;
+    myFixes = []; otherFixes = []; shownRot = null; hsin = hcos = null;
     $("findView").classList.add("hidden");
     $("joinView").classList.remove("hidden");
   }
