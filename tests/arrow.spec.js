@@ -52,3 +52,16 @@ test("it says waiting until the other phone joins", async ({ browser }) => {
   await a.click("#startBtn");
   await expect(a.locator("#status")).toContainText("Waiting for the other phone");
 });
+
+test("when the phones are within a few metres the arrow fades and it says you're here", async ({ browser }) => {
+  const near = { latitude: -37.81359, longitude: 144.96311, accuracy: 3 }; // ~1.5 m from A
+  const a = await phone(browser, A);
+  const b = await phone(browser, near);
+  const code = "NEAR" + Math.floor(Math.random() * 90 + 10);
+  for (const p of [a, b]) {
+    await p.fill("#codeInput", code);
+    await p.click("#startBtn");
+  }
+  await expect(a.locator("#arrow")).toHaveAttribute("data-close", "1", { timeout: 15000 });
+  await expect(a.locator("#status")).toContainText("You're here");
+});

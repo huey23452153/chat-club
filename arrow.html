@@ -84,6 +84,7 @@
 
   const $ = id => document.getElementById(id);
   const STALE_MS = 60 * 1000;      // ignore a position older than this
+  const CLOSE_M = 5;               // closer than this the arrow just spins, so hide it
   const WEAK_GPS_M = 30;           // gps worse than this = warn
   const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
@@ -136,14 +137,18 @@
     const d = distanceM(myPos, otherPos);
     const b = bearingDeg(myPos, otherPos);
     const rot = heading == null ? b : (b - heading + 360) % 360;
+    const close = d < CLOSE_M;
     $("arrow").style.transform = `rotate(${rot}deg)`;
     $("arrow").dataset.rotation = String(Math.round(rot));
+    $("arrow").style.opacity = close ? "0.15" : "1";
+    $("arrow").dataset.close = close ? "1" : "0";
     $("dist").textContent = fmtDistance(d);
     $("dist").dataset.meters = String(Math.round(d));
     const worst = Math.max(myPos.acc || 0, otherPos.acc || 0);
-    if(heading == null) setStatus("No compass: arrow points North-up", "warn");
+    if(close) setStatus("You're here! Look around 👀", "good");
+    else if(heading == null) setStatus("No compass: arrow points North-up", "warn");
     else if(worst > WEAK_GPS_M) setStatus("GPS is weak (±" + Math.round(worst) + " m). Go outside for a better arrow.", "warn");
-    else setStatus(d < 5 ? "You're right next to each other!" : "Follow the arrow", "good");
+    else setStatus("Follow the arrow", "good");
   }
 
   // compass: iOS gives webkitCompassHeading (already clockwise from north);
@@ -193,7 +198,7 @@
     const mine = doc(db, "arrowRooms", code, "players", uid);
     watchId = navigator.geolocation.watchPosition(pos => {
       myPos = { lat: pos.coords.latitude, lng: pos.coords.longitude, acc: pos.coords.accuracy, t: Date.now() };
-      if(Date.now() - lastWrite > 1500){
+      if(Date.now() - lastWrite > 700){
         lastWrite = Date.now();
         setDoc(mine, myPos).catch(() => {});
       }
