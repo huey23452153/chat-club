@@ -89,7 +89,7 @@
   const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
   let uid = null, code = null, myPos = null, otherPos = null, heading = null;
-  let myFixes = [], otherFixes = [], shownRot = null;
+  let myFixes = [], otherFixes = [], shownRot = null, peopleInRoom = 0, otherRemoteT = null, wakeLock = null;
   let watchId = null, unsubPlayers = null, lastWrite = 0;
 
   function makeCode(){
@@ -155,7 +155,9 @@
   function render(){
     if(!myPos){ setStatus("Finding your location…"); return; }
     if(!otherPos || Date.now() - otherPos.t > STALE_MS){
-      setStatus("Waiting for the other phone…");
+      setStatus(peopleInRoom <= 1
+        ? "Waiting for the other phone… (only you are in room " + code + ")"
+        : "Waiting for the other phone's location…");
       $("dist").textContent = "--";
       $("dist").dataset.meters = "";
       return;
@@ -224,6 +226,7 @@
     $("codeShow").textContent = code;
     setStatus("Finding your location…");
     askCompass(); // after the tap, so iOS allows the prompt
+    try{ if(navigator.wakeLock) wakeLock = await navigator.wakeLock.request("screen"); } catch(err){}
 
     const mine = doc(db, "arrowRooms", code, "players", uid);
     watchId = navigator.geolocation.watchPosition(pos => {
@@ -239,11 +242,16 @@
     }, { enableHighAccuracy: true, maximumAge: 1000, timeout: 20000 });
 
     unsubPlayers = onSnapshot(collection(db, "arrowRooms", code, "players"), snap => {
-      let latest = null;
-      snap.forEach(d => { if(d.id !== uid) latest = d.data(); });
-      if(!latest) otherFixes = [];
-      else if(!otherPos || latest.t !== otherPos.t){ otherFixes.push(latest); if(otherFixes.length > 8) otherFixes.shift(); }
-      otherPos = latest;
+      let latest = null, count = 0;
+      snap.forEach(d => { count++; if(d.id !== uid) latest = d.data(); });
+      peopleInRoom = count;
+      if(!latest){ otherFixes = []; otherPos = null; otherRemoteT = null; }
+      else if(latest.t !== otherRemoteT){
+        // stamp with OUR clock: the other phone's clock can be off by minutes
+        otherRemoteT = latest.t;
+        otherPos = { lat: latest.lat, lng: latest.lng, acc: latest.acc, t: Date.now() };
+        otherFixes.push(otherPos); if(otherFixes.length > 8) otherFixes.shift();
+      }
       render();
     });
   }
@@ -255,7 +263,8 @@
     window.removeEventListener("deviceorientation", onOrientation, true);
     try{ await deleteDoc(doc(db, "arrowRooms", code, "players", uid)); } catch(err){}
     watchId = unsubPlayers = null; myPos = otherPos = heading = null;
-    myFixes = []; otherFixes = []; shownRot = null; hsin = hcos = null;
+    myFixes = []; otherFixes = []; shownRot = null; hsin = hcos = null; otherRemoteT = null; peopleInRoom = 0;
+    try{ if(wakeLock) wakeLock.release(); } catch(err){} wakeLock = null;
     $("findView").classList.add("hidden");
     $("joinView").classList.remove("hidden");
   }

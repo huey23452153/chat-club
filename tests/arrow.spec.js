@@ -68,3 +68,24 @@ test("when the phones are within a few metres the arrow fades and it says you're
   await expect(a.locator("#arrow")).toHaveAttribute("data-close", "1", { timeout: 15000 });
   await expect(a.locator("#status")).toContainText("You're here");
 });
+
+test("it still works when the other phone's clock is 5 minutes wrong", async ({ browser }) => {
+  const a = await phone(browser, A);
+  const ctxB = await browser.newContext({ geolocation: B, permissions: ["geolocation"] });
+  await ctxB.addInitScript(() => { const n = Date.now.bind(Date); Date.now = () => n() - 5 * 60 * 1000; });
+  const b = await ctxB.newPage();
+  await b.goto("/arrow.html");
+  const code = "SKEW" + Math.floor(Math.random() * 90 + 10);
+  for (const p of [a, b]) {
+    await p.fill("#codeInput", code);
+    await p.click("#startBtn");
+  }
+  await expect(a.locator("#dist")).toHaveAttribute("data-meters", /^(9\d|10\d)$/, { timeout: 15000 });
+});
+
+test("it says how many phones are in the room while waiting", async ({ browser }) => {
+  const a = await phone(browser, A);
+  await a.fill("#codeInput", "ROOM" + Math.floor(Math.random() * 90 + 10));
+  await a.click("#startBtn");
+  await expect(a.locator("#status")).toContainText("only you are in room");
+});
