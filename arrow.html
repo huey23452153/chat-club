@@ -229,7 +229,8 @@
     try{ if(navigator.wakeLock) wakeLock = await navigator.wakeLock.request("screen"); } catch(err){}
 
     const mine = doc(db, "arrowRooms", code, "players", uid);
-    watchId = navigator.geolocation.watchPosition(pos => {
+    const onFix = pos => {
+      gotFix = true;
       myPos = { lat: pos.coords.latitude, lng: pos.coords.longitude, acc: pos.coords.accuracy, t: Date.now() };
       myFixes.push(myPos); if(myFixes.length > 8) myFixes.shift();
       if(Date.now() - lastWrite > 700){
@@ -237,9 +238,17 @@
         setDoc(mine, myPos).catch(() => {});
       }
       render();
-    }, err => {
-      setStatus(err.code === 1 ? "Location is blocked. Allow it in your browser settings." : "Can't get your location.", "warn");
-    }, { enableHighAccuracy: true, maximumAge: 1000, timeout: 20000 });
+    };
+    const onGeoErr = err => {
+      if(err.code === 1) setStatus("Location is blocked. Allow it for this site in your phone's settings, then reload.", "warn");
+      else if(!gotFix) setStatus("Still can't find you. Check Location Services is on, and go outside.", "warn");
+    };
+    let gotFix = false;
+    // a quick rough fix first (Wi-Fi/cell), so the other phone sees you right away...
+    navigator.geolocation.getCurrentPosition(onFix, () => {}, { enableHighAccuracy: false, maximumAge: 120000, timeout: 8000 });
+    // ...then the precise gps keeps refining it
+    watchId = navigator.geolocation.watchPosition(onFix, onGeoErr, { enableHighAccuracy: true, maximumAge: 1000, timeout: 20000 });
+    setTimeout(() => { if(!gotFix) setStatus("Still finding you… check Location Services is on and go outside.", "warn"); }, 12000);
 
     unsubPlayers = onSnapshot(collection(db, "arrowRooms", code, "players"), snap => {
       let latest = null, count = 0;

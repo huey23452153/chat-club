@@ -89,3 +89,12 @@ test("it says how many phones are in the room while waiting", async ({ browser }
   await a.click("#startBtn");
   await expect(a.locator("#status")).toContainText("only you are in room");
 });
+
+test("a phone with location blocked is told how to fix it", async ({ browser }) => {
+  const ctx = await browser.newContext({ permissions: [] }); // no location allowed
+  const a = await ctx.newPage();
+  await a.goto("/arrow.html");
+  await a.fill("#codeInput", "DENY" + Math.floor(Math.random() * 90 + 10));
+  await a.click("#startBtn");
+  await expect(a.locator("#status")).toContainText(/blocked|Still can't find you/i, { timeout: 15000 });
+});
