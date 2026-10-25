@@ -980,6 +980,16 @@
   .call-overlay.pip .call-controls{ gap:8px; }
   .call-overlay.pip .call-control-btn{ width:34px; height:34px; font-size:14px; }
   @media (max-width:480px){ .call-overlay.pip{ width:170px; } }
+  /* Dust Crawler opened from a call: the game fills the screen, with the
+     shrunk call floating on top of it (the call overlay sits higher). */
+  .game-panel{ position:fixed; inset:0; z-index:240; display:none; background:#000; }
+  .game-panel.show{ display:block; }
+  .game-panel iframe{ width:100%; height:100%; border:0; display:block; }
+  .game-panel-close{
+    position:absolute; top:10px; left:50%; transform:translateX(-50%); z-index:1;
+    border:0; border-radius:999px; padding:6px 14px; font:600 13px system-ui, sans-serif;
+    background:rgba(0,0,0,0.6); color:#fff; cursor:pointer;
+  }
 
   .call-pip-bar{
     display:flex; align-items:center; justify-content:flex-end; gap:6px;
@@ -1244,9 +1254,16 @@
     <button class="call-control-btn" id="switchCameraBtn" title="Switch camera" style="display:none;">🔄</button>
     <button class="call-control-btn" id="toggleScreenBtn" title="Share screen">🖥️</button>
     <button class="call-control-btn" id="whiteboardBtn" title="Open whiteboard">🎨</button>
+    <button class="call-control-btn" id="gameBtn" title="Play Dust Crawler together">🎮</button>
     <button class="call-control-btn end" id="endCallBtn" title="End call">📞</button>
   </div>
   <div class="pip-resize-handle" id="pipResizeHandle" title="Drag to resize">⤡</div>
+</div>
+<!-- Dust Crawler, opened with the 🎮 button in a call. Everyone in the call
+     lands in the same game, and talks over the call. -->
+<div class="game-panel" id="gamePanel">
+  <button class="game-panel-close" id="gameCloseBtn" title="Leave the game (the call keeps going)">✕ Leave game</button>
+  <iframe id="gameFrame" title="Dust Crawler" allow="autoplay; fullscreen; gamepad; hid; camera; microphone; screen-wake-lock"></iframe>
 </div>
 <!-- Shown to whoever is sharing their screen: first to ask permission, then
      (in red) for the whole time someone else is controlling their computer. -->
@@ -1769,6 +1786,26 @@
   // Since students just pick a name + password, we quietly turn their name
   // into a fake internal "email" behind the scenes. They never see this.
   const NAME_AUTH_DOMAIN = "chatclub.local";
+  // Names that aren't allowed (people, groups): hate figures and symbols,
+  // slurs and swearing. Letters are tidied first so tricks like "H1ttler",
+  // "n.a.z.i" or "Hiiitler" still get caught.
+  const BLOCKED_NAME_BITS = ["hitler", "hitla", "nazi", "heil", "swastika", "holocaust", "genocide", "kkk", "klan",
+    "nigg", "niga", "faggot", "retard", "cunt", "fuck", "fuk", "shit", "bitch", "whore", "slut", "porn", "penis",
+    "vagina", "pussy", "rapist", "pedo", "isis", "jihad", "terrorist", "killyourself", "stalin", "binladen", "1488"];
+  function nameNotAllowed(name){
+    const plain = String(name).toLowerCase()
+      .replace(/[0@4]/g, c => ({ "0": "o", "@": "a", "4": "a" })[c]).replace(/[1!|]/g, "i").replace(/3/g, "e")
+      .replace(/[5$]/g, "s").replace(/7/g, "t").replace(/[^a-z0-9]/g, "")
+      .replace(/nazir/g, "");
+    // "Hiiitler" → "hitler"; only checked against words without a double
+    // letter of their own, so "kkk" can't match every name with a k in it
+    const squashed = plain.replace(/(.)\1+/g, "$1");
+    const digits = String(name).replace(/[^0-9]/g, "");
+    return BLOCKED_NAME_BITS.some(bit => plain.includes(bit) || digits.includes(bit)
+      || (!/(.)\1/.test(bit) && squashed.includes(bit)));
+  }
+  const NAME_NOT_ALLOWED_MSG = "That name isn't allowed. Please pick a different one.";
+
   function nameToAuthEmail(name){
     const slug = name.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
     return `${slug}@${NAME_AUTH_DOMAIN}`;
@@ -2012,6 +2049,7 @@
     const typedEmail = looksLikeEmail(name);
     if(typedEmail && authMode === "signup"){ showAuthMsg("Pick a name, not an email. You can add an email later in Customize."); return; }
     if(!typedEmail && name.length > 24){ showAuthMsg("Names can be up to 24 letters long."); return; }
+    if(authMode === "signup" && nameNotAllowed(name)){ showAuthMsg(NAME_NOT_ALLOWED_MSG); return; }
     const authEmail = typedEmail ? name : nameToAuthEmail(name);
     if(authEmail === `@${NAME_AUTH_DOMAIN}`){ showAuthMsg("Please use a name with at least one letter or number in it."); return; }
 
@@ -3074,6 +3112,7 @@
     const newName = $("renameInput").value.trim();
     const msgEl = $("renameMsg");
     if(!newName){ msgEl.textContent = "Please enter a name."; msgEl.classList.add("show"); return; }
+    if(nameNotAllowed(newName)){ msgEl.textContent = NAME_NOT_ALLOWED_MSG; msgEl.classList.add("show"); return; }
     try{
       await updateDoc(doc(db, "groups", activeGroupId), { name: newName, updatedAt: serverTimestamp() });
       closeModal("renameModal");
@@ -3796,6 +3835,7 @@
     if(localStream){ localStream.getTracks().forEach(t => t.stop()); localStream = null; }
     if(callHeartbeatInterval){ clearInterval(callHeartbeatInterval); callHeartbeatInterval = null; }
     if(activeCallUnsub){ activeCallUnsub(); activeCallUnsub = null; }
+    setGameOpen(false);
     activeCallGroupId = null;
   }
   function endCallLocally(){
@@ -4839,6 +4879,38 @@
   }
   $("whiteboardBtn").addEventListener("click", () => setWhiteboardOpen(!isWhiteboardOpen()));
 
+  // Dust Crawler in a call: everyone in the same call gets the same 4-letter
+  // game room (worked out from the group id), so pressing 🎮 puts them all in
+  // one game. The game's own walkie is switched off by ?cc= — voice stays on
+  // this call. Leaving the game (or the call) unloads it.
+  const GAME_URL = "https://dust-crawler.vercel.app/";
+  function gameRoomFor(groupId){
+    const letters = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+    let h = 2166136261;
+    for(const ch of String(groupId)) h = Math.imul(h ^ ch.charCodeAt(0), 16777619);
+    h >>>= 0;
+    let room = "";
+    for(let i = 0; i < 4; i++){ room += letters[h % 24]; h = Math.floor(h / 24); }
+    return room;
+  }
+  function setGameOpen(open){
+    const panel = $("gamePanel"), frame = $("gameFrame");
+    if(open && !activeCallGroupId) return;
+    if(open){
+      const name = (currentUser && currentUser.displayName || "").slice(0, 14);
+      if(!frame.getAttribute("src")) frame.src = GAME_URL + "?cc=" + gameRoomFor(activeCallGroupId) + "&name=" + encodeURIComponent(name);
+      panel.classList.add("show");
+      if(!$("callOverlay").classList.contains("pip")) $("pipToggleBtn").click();
+      frame.focus();
+    } else {
+      panel.classList.remove("show");
+      frame.removeAttribute("src");
+    }
+    $("gameBtn").classList.toggle("active", open);
+  }
+  $("gameBtn").addEventListener("click", () => setGameOpen(!$("gamePanel").classList.contains("show")));
+  $("gameCloseBtn").addEventListener("click", () => setGameOpen(false));
+
   // The board only lives as long as the call — leaving throws it away.
   function resetWhiteboard(){
     setWhiteboardOpen(false);
@@ -5071,6 +5143,7 @@
     const msgEl = $("renameMeMsg");
     msgEl.classList.remove("show", "success");
     if(!newName){ msgEl.textContent = "Please enter a name."; msgEl.classList.add("show"); return; }
+    if(nameNotAllowed(newName)){ msgEl.textContent = NAME_NOT_ALLOWED_MSG; msgEl.classList.add("show"); return; }
     const newLower = newName.toLowerCase();
     if(newLower === currentUser.displayName.trim().toLowerCase()){
       msgEl.textContent = "That's already your name!";
