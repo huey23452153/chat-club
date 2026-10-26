@@ -985,6 +985,18 @@
   .game-panel{ position:fixed; inset:0; z-index:240; display:none; background:#000; }
   .game-panel.show{ display:block; }
   .game-panel iframe{ width:100%; height:100%; border:0; display:block; }
+  .game-maps{
+    position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px;
+    color:#fff; font:15px system-ui, sans-serif; text-align:center; padding:16px;
+    background:radial-gradient(circle at 50% 30%, #3a2c1c, #0b0806);
+  }
+  .game-maps h2{ margin:0; font-size:24px; }
+  .game-maps p{ margin:0; opacity:.75; max-width:340px; }
+  .game-maps-row{ display:flex; flex-wrap:wrap; gap:10px; justify-content:center; }
+  .game-maps-row button{
+    border:0; border-radius:14px; padding:14px 18px; min-width:120px; cursor:pointer;
+    font:600 15px system-ui, sans-serif; background:#e0a23a; color:#1b1206;
+  }
   .game-panel-close{
     position:absolute; top:10px; left:50%; transform:translateX(-50%); z-index:1;
     border:0; border-radius:999px; padding:6px 14px; font:600 13px system-ui, sans-serif;
@@ -1264,6 +1276,15 @@
 <div class="game-panel" id="gamePanel">
   <button class="game-panel-close" id="gameCloseBtn" title="Leave the game (the call keeps going)">✕ Leave game</button>
   <iframe id="gameFrame" title="Dust Crawler" allow="autoplay; fullscreen; gamepad; hid; camera; microphone; screen-wake-lock"></iframe>
+  <div class="game-maps" id="gameMaps">
+    <h2>🚙 Dust Crawler</h2>
+    <p>Pick a map. If someone in the call is already driving, you'll go to their map.</p>
+    <div class="game-maps-row">
+      <button data-map="valley">🌲 Valley</button>
+      <button data-map="outback">🏜️ Outback</button>
+      <button data-map="highcountry">⛰️ High Country</button>
+    </div>
+  </div>
 </div>
 <!-- Shown to whoever is sharing their screen: first to ask permission, then
      (in red) for the whole time someone else is controlling their computer. -->
@@ -4897,8 +4918,8 @@
     const panel = $("gamePanel"), frame = $("gameFrame");
     if(open && !activeCallGroupId) return;
     if(open){
-      const name = (currentUser && currentUser.displayName || "").slice(0, 14);
-      if(!frame.getAttribute("src")) frame.src = GAME_URL + "?cc=" + gameRoomFor(activeCallGroupId) + "&name=" + encodeURIComponent(name);
+      // first time: pick a map (the game then starts on its menu, to pick a truck)
+      $("gameMaps").style.display = frame.getAttribute("src") ? "none" : "";
       panel.classList.add("show");
       if(!$("callOverlay").classList.contains("pip")) $("pipToggleBtn").click();
       frame.focus();
@@ -4910,6 +4931,14 @@
   }
   $("gameBtn").addEventListener("click", () => setGameOpen(!$("gamePanel").classList.contains("show")));
   $("gameCloseBtn").addEventListener("click", () => setGameOpen(false));
+  $("gameMaps").addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-map]");
+    if(!btn || !activeCallGroupId) return;
+    const name = (currentUser && currentUser.displayName || "").slice(0, 14);
+    $("gameFrame").src = GAME_URL + "?cc=" + gameRoomFor(activeCallGroupId) + "&map=" + btn.dataset.map + "&name=" + encodeURIComponent(name);
+    $("gameMaps").style.display = "none";
+    $("gameFrame").focus();
+  });
 
   // The board only lives as long as the call — leaving throws it away.
   function resetWhiteboard(){

@@ -7,7 +7,7 @@ const {
 // the same call lands in the same game room (the game is loaded from the
 // live site, so this test needs the internet).
 test("game button: both people in a call end up in the same Dust Crawler room", async ({ browser }) => {
-  test.setTimeout(120000);
+  test.setTimeout(240000);
   const ctxA = await browser.newContext();
   const ctxB = await browser.newContext();
   const pageA = await ctxA.newPage();
@@ -32,6 +32,20 @@ test("game button: both people in a call end up in the same Dust Crawler room", 
     await expect(page.locator("#gamePanel")).toBeVisible();
     // the call shrinks into a corner so the game can be seen
     await expect(page.locator("#callOverlay")).toHaveClass(/pip/);
+    // pick a map (B picks a different one: the game moves B to the room's map)
+    await page.click(`#gameMaps button[data-map="${page === pageA ? "valley" : "outback"}"]`);
+    await expect(page.locator("#gameMaps")).toBeHidden();
+  }
+  // the game inside the page (asked for fresh each time: B's reloads when it switches map)
+  const inFrame = (page, fn) => {
+    const frame = page.frames().find((f) => /dust-crawler/.test(f.url()));
+    return frame ? frame.evaluate(fn).catch(() => null) : Promise.resolve(null);
+  };
+  // the games start on their menus; START ENGINE joins the call's room
+  for(const page of [pageA, pageB]){
+    await expect.poll(() => inFrame(page, () => !!(window.game && window.game.G.state === "menu")), { timeout: 60000 }).toBe(true);
+    await inFrame(page, () => document.getElementById("start").click());
+    if(page === pageA) await expect.poll(() => inFrame(page, () => window.game.net.code), { timeout: 60000 }).not.toBeNull();
   }
   const srcA = await pageA.locator("#gameFrame").getAttribute("src");
   const srcB = await pageB.locator("#gameFrame").getAttribute("src");
@@ -41,14 +55,15 @@ test("game button: both people in a call end up in the same Dust Crawler room", 
 
   // inside the games: one made the room, the other joined it, and each sees the other
   const inGame = async (page) => {
-    const frame = page.frame({ url: /dust-crawler/ });
-    await expect.poll(() => frame.evaluate(() => window.game && window.game.remotes.size), { timeout: 60000 }).toBe(1);
-    return frame.evaluate(() => ({ code: window.game.net.code, host: window.game.net.isHost }));
+    await expect.poll(() => inFrame(page, () => window.game && [...window.game.remotes.values()].filter((r) => r.have).length), { timeout: 90000 }).toBe(1);
+    return inFrame(page, () => ({ code: window.game.net.code, host: window.game.net.isHost, map: window.game.W.MAP }));
   };
   const gA = await inGame(pageA), gB = await inGame(pageB);
   expect(gA.code).toBe(room(srcA));
   expect(gB.code).toBe(room(srcA));
   expect(gA.host).not.toBe(gB.host);
+  // B picked a different map, and got moved onto the room's map
+  expect(gB.map).toBe(gA.map);
 
   // leaving the game keeps the call; hanging up closes the game too
   await pageA.click("#gameCloseBtn");
