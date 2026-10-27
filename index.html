@@ -2326,16 +2326,23 @@
   // background tab, like other chat apps); anyone whose bump is recent
   // enough counts as online. Closing the tab needs no cleanup — the bumps
   // just stop and they fade to offline on their own.
-  const PRESENCE_HEARTBEAT_MS = 30000;
-  // Browsers slow background-tab timers down to about once a minute, so
-  // allow a bit more than two of those before calling someone offline.
-  const PRESENCE_ONLINE_MS = 150000;
+  // (every 2 minutes, not 30 seconds: each bump is a database write, plus a read
+  // for everyone watching, and the free Firebase plan only allows so many a day)
+  const PRESENCE_HEARTBEAT_MS = 120000;
+  // a bit more than two missed bumps before calling someone offline
+  const PRESENCE_ONLINE_MS = 300000;
+  // tucked away (hidden tab, or the desktop app in the tray) for this long:
+  // stop bumping, so an app left running all day doesn't use up the free writes
+  const PRESENCE_IDLE_HIDDEN_MS = 600000;
+  let presenceHiddenSince = document.hidden ? Date.now() : 0;
+  document.addEventListener("visibilitychange", () => { presenceHiddenSince = document.hidden ? Date.now() : 0; });
   const presence = new Map();       // uid -> { lastActive (server ms), seenAt (local ms of the last change) }
   const presenceUnsubs = new Map(); // uid -> unsubscribe
   let presenceHeartbeat = null, presenceRefresh = null;
 
   function sendPresenceHeartbeat(){
     if(!currentUser) return;
+    if(presenceHiddenSince && Date.now() - presenceHiddenSince > PRESENCE_IDLE_HIDDEN_MS) return;
     updateDoc(doc(db, "users", currentUser.uid), { lastActive: serverTimestamp() }).catch(()=>{});
   }
   // Coming back to the tab refreshes straight away rather than waiting for
