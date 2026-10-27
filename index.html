@@ -5102,7 +5102,9 @@
   function notifyNewMessage(senderName, text){
     playPingSound();
     showToast(senderName, text || "");
-    if(document.hidden){
+    // A Windows popup whenever you're not looking at Chat Club: the tab is hidden, OR
+    // the window is open but another app is in front of it.
+    if(document.hidden || !document.hasFocus()){
       flashTitle(`🔔 ${senderName} sent a message`);
       if(notifsOn()){
         try{
@@ -5128,7 +5130,7 @@
     btn.disabled = false;
     if(notifsOn()){
       btn.textContent = "Turn off notifications";
-      sub.textContent = "You'll get a popup + sound for new messages when this tab isn't focused.";
+      sub.textContent = "You'll get a Windows popup + sound for new messages when you're not looking at Chat Club (it needs to be open in a tab or the app).";
     } else {
       btn.textContent = "Turn on notifications";
       sub.textContent = "Get a popup + sound for new messages when this tab isn't focused.";
