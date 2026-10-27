@@ -463,6 +463,16 @@
     object-fit:cover; cursor:pointer;
   }
   .bubble img.msg-image + .msg-text{ margin-top:6px; }
+  /* tap a photo: it fills the screen; tap anywhere (or Esc) to close */
+  .image-viewer{ position:fixed; inset:0; z-index:400; background:rgba(0,0,0,.88); display:none; align-items:center; justify-content:center; padding:16px; cursor:zoom-out; }
+  .image-viewer.show{ display:flex; }
+  .image-viewer img{ max-width:100%; max-height:100%; object-fit:contain; border-radius:8px; }
+  .image-viewer button{ position:absolute; top:12px; right:12px; background:rgba(255,255,255,.15); color:#fff; border:none; width:40px; height:40px; border-radius:50%; font-size:18px; cursor:pointer; }
+  /* profile pictures */
+  .avatar.has-photo{ background-size:cover !important; background-position:center !important; color:transparent; }
+  .msg-row.theirs .msg-who{ display:flex; align-items:center; gap:6px; }
+  .msg-pfp{ width:20px; height:20px; border-radius:50%; background-size:cover; background-position:center; flex-shrink:0; }
+  .pfp-preview{ width:64px; height:64px; border-radius:50%; background:var(--teal) center/cover; display:inline-block; vertical-align:middle; margin-right:10px; }
 
   .poll-option-row{ display:flex; gap:8px; margin-bottom:8px; align-items:center; }
   .poll-option-remove{ background:none; border:none; color: var(--ink-soft); font-size:16px; flex-shrink:0; }
@@ -1235,6 +1245,7 @@
     <button class="decline" id="declineCallBtn">✕ Decline</button>
   </div>
 </div>
+<div class="image-viewer" id="imageViewer"><img id="imageViewerImg" alt="Photo, full size"><button id="imageViewerClose" title="Close">✕</button></div>
 <div class="call-overlay" id="callOverlay">
   <div class="call-pip-bar" id="callPipBar">
     <div class="call-pip-corners" id="callPipCorners">
@@ -1577,6 +1588,15 @@
 
     <h4>Background theme</h4>
     <div class="color-swatches" id="bgThemeSwatches"></div>
+
+    <h4>Profile picture</h4>
+    <p class="modal-sub">Everyone in your chats sees it next to your name.</p>
+    <div style="margin-bottom:20px;display:flex;align-items:center;flex-wrap:wrap;gap:8px">
+      <span class="pfp-preview" id="pfpPreview"></span>
+      <button class="big-btn secondary" id="pfpPickBtn" style="width:auto">Choose a picture</button>
+      <button class="big-btn secondary" id="pfpRemoveBtn" style="width:auto">Remove</button>
+      <input type="file" id="pfpInput" accept="image/*" hidden>
+    </div>
 
     <h4>Notifications</h4>
     <p class="modal-sub" id="notifsSub">Get a popup + sound for new messages when this tab isn't focused.</p>
@@ -2292,6 +2312,7 @@
       applyMyColor(currentUser.color);
       $("meName").textContent = currentUser.displayName;
       $("meAvatar").textContent = initials(currentUser.displayName);
+      getDoc(doc(db, "users", currentUser.uid)).then((snap) => showMyPhoto(snap.data()?.photo)).catch(() => {});
       passwordInput.value = ""; nameInput.value = "";
       showScreen("app");
       listenToMyGroups();
@@ -2367,6 +2388,56 @@
   }
 
   // Keep one listener per person I share a group with (and drop the rest).
+  // profile pictures: a small square JPEG (stored on the user's own document)
+  const photos = new Map(); // uid -> data URL
+  const isValidPfp = (p) => typeof p === "string" && p.length < 60000 && /^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(p);
+  function showMyPhoto(photo){
+    const ok = isValidPfp(photo);
+    for(const el of [$("meAvatar"), $("pfpPreview")]){
+      el.classList.toggle("has-photo", ok);
+      el.style.backgroundImage = ok ? `url("${photo}")` : "";
+    }
+    if(ok) photos.set(currentUser.uid, photo); else if(currentUser) photos.delete(currentUser.uid);
+  }
+  function squarePfp(file){
+    return new Promise((resolve, reject) => {
+      const img = new Image(), url = URL.createObjectURL(file);
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        const size = 128, side = Math.min(img.width, img.height), c = document.createElement("canvas");
+        c.width = c.height = size;
+        c.getContext("2d").drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, size, size);
+        resolve(c.toDataURL("image/jpeg", 0.75));
+      };
+      img.onerror = () => reject(new Error("Couldn't read that picture"));
+      img.src = url;
+    });
+  }
+  $("pfpPickBtn").addEventListener("click", () => $("pfpInput").click());
+  $("pfpInput").addEventListener("change", async () => {
+    const file = $("pfpInput").files[0]; $("pfpInput").value = "";
+    if(!file || !currentUser) return;
+    try{
+      const photo = await squarePfp(file);
+      await updateDoc(doc(db, "users", currentUser.uid), { photo });
+      showMyPhoto(photo);
+    } catch(e){ showToast("Chat Club", "Couldn't save that picture. Try another one."); }
+  });
+  $("pfpRemoveBtn").addEventListener("click", async () => {
+    if(!currentUser) return;
+    try{ await updateDoc(doc(db, "users", currentUser.uid), { photo: deleteField() }); showMyPhoto(null); } catch(e){}
+  });
+
+  // tap a photo in a chat to see it full screen
+  function openImageViewer(src){ $("imageViewerImg").src = src; $("imageViewer").classList.add("show"); }
+  function closeImageViewer(){ $("imageViewer").classList.remove("show"); $("imageViewerImg").removeAttribute("src"); }
+  $("imageViewer").addEventListener("click", closeImageViewer);
+  document.addEventListener("keydown", (e) => { if(e.key === "Escape" && $("imageViewer").classList.contains("show")) closeImageViewer(); });
+  document.addEventListener("click", (e) => {
+    const img = e.target.closest && e.target.closest(".bubble img.msg-image");
+    if(img && !e.target.closest("a")){ e.preventDefault(); openImageViewer(img.src); }
+  });
+
   function watchPresenceOf(uids){
     if(!currentUser) return;
     const wanted = new Set(uids);
@@ -2377,6 +2448,8 @@
     for(const uid of wanted){
       if(presenceUnsubs.has(uid)) continue;
       presenceUnsubs.set(uid, onSnapshot(doc(db, "users", uid), (snap) => {
+        const photo = snap.data()?.photo;
+        if(isValidPfp(photo) ? photos.get(uid) !== photo : photos.has(uid)){ if(isValidPfp(photo)) photos.set(uid, photo); else photos.delete(uid); if(lastRenderedMessages) renderMessages(lastRenderedMessages); }
         const t = snap.data()?.lastActive;
         const lastActive = t?.toMillis ? t.toMillis() : 0;
         const prev = presence.get(uid);
@@ -2891,7 +2964,7 @@
         const bubbleInner = replyQuoteHtml + imageHtml + textHtml + pollHtml;
 
         row.innerHTML = `
-          ${mine ? "" : `<div class="msg-sender">${escapeHtml(m.senderName || "Friend")}</div>`}
+          ${mine ? "" : `<div class="msg-sender msg-who">${photos.has(m.senderId) ? `<span class="msg-pfp" style="background-image:url('${photos.get(m.senderId)}')"></span>` : ""}${escapeHtml(m.senderName || "Friend")}</div>`}
           <div class="bubble" ${mine ? `data-editable data-id="${m.id}"` : ""}>${bubbleInner}</div>
           <div class="msg-time">${timeStr}${editedTag}</div>
           <div class="reactions-row">
@@ -5321,7 +5394,7 @@
   // =========================================================================
   function applyMyColor(hex){
     document.documentElement.style.setProperty("--bubble-me", hex);
-    $("meAvatar").style.background = hex;
+    $("meAvatar").style.backgroundColor = hex;
   }
 
   $("helpBtn").addEventListener("click", () => openModal("helpModal"));
