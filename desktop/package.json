@@ -1,7 +1,7 @@
 {
   "name": "chat-club-desktop",
   "productName": "Chat Club",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "Chat Club as a desktop app for Windows and Mac",
   "author": "huey",
   "private": true,
@@ -27,7 +27,8 @@
       "facewake.html",
       "privacy.js",
       "privacy.html",
-      "helper/server.js"
+      "helper/server.js",
+      "build/icon.png"
     ],
     "directories": {
       "output": "dist",

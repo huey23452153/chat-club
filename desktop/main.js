@@ -5,7 +5,7 @@
 // its own window and icon, the unread count on the icon, one copy at a time,
 // it remembers where its window was, and the remote-control helper is built in
 // (control-helper/server.js, which otherwise is a separate install).
-const { app, BrowserWindow, shell, session, desktopCapturer, Menu, systemPreferences, utilityProcess, dialog, net, ipcMain } = require('electron');
+const { app, BrowserWindow, shell, session, desktopCapturer, Menu, systemPreferences, utilityProcess, dialog, net, ipcMain, Tray, nativeImage } = require('electron');
 const faceWake = require('./facewake');
 const privacy = require('./privacy');
 const fs = require('fs');
@@ -20,15 +20,36 @@ const SMOKE = process.argv.includes('--smoke'); // open, report the page's title
 if (SMOKE) app.setPath('userData', path.join(app.getPath('temp'), 'chat-club-smoke'));
 
 let win = null;
+// Closing the window keeps Chat Club running in the tray (by the clock), so new-message
+// notifications still pop up. Quit from the tray icon's menu to really close it.
+let tray = null, quitting = false, toldAboutTray = false;
+const KEEP_IN_TRAY = process.platform === 'win32';
+app.on('before-quit', () => { quitting = true; });
+function showWindow() {
+  if (!win) return createWindow();
+  if (win.isMinimized()) win.restore();
+  win.show(); win.focus();
+}
+function makeTray() {
+  if (!KEEP_IN_TRAY || tray || SMOKE) return;
+  const icon = nativeImage.createFromPath(path.join(__dirname, 'build', 'icon.png')).resize({ width: 16, height: 16 });
+  tray = new Tray(icon);
+  tray.setToolTip('Chat Club');
+  const menu = () => Menu.buildFromTemplate([
+    { label: 'Open Chat Club', click: showWindow },
+    { label: 'Start with Windows', type: 'checkbox', checked: app.getLoginItemSettings().openAtLogin, click: (item) => app.setLoginItemSettings({ openAtLogin: item.checked, args: ['--hidden'] }) },
+    { type: 'separator' },
+    { label: 'Quit Chat Club', click: () => { quitting = true; app.quit(); } },
+  ]);
+  tray.setContextMenu(menu());
+  tray.on('right-click', () => tray.setContextMenu(menu()));
+  tray.on('click', showWindow);
+}
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on('second-instance', () => {
-    if (!win) return;
-    if (win.isMinimized()) win.restore();
-    win.focus();
-  });
+  app.on('second-instance', () => showWindow());
 }
 
 // The remote-control helper: the same little local server as the separate
@@ -198,11 +219,12 @@ function createWindow() {
     ...savedBounds(),
     minWidth: 380,
     minHeight: 520,
-    show: !SMOKE,
+    show: !SMOKE && !process.argv.includes('--hidden'),      // (started with Windows: wait quietly in the tray)
     title: 'Chat Club',
     backgroundColor: '#ffffff',
     autoHideMenuBar: true,
-    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, preload: path.join(__dirname, 'preload.js') },
+    // (backgroundThrottling off: messages keep arriving on time while the window is hidden in the tray)
+    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false, preload: path.join(__dirname, 'preload.js') },
   });
 
   // links to other sites open in the real browser, never inside the app
@@ -216,8 +238,12 @@ function createWindow() {
     if (/^https?:/i.test(url)) shell.openExternal(url);
   });
 
-  win.on('close', () => {
+  win.on('close', (event) => {
     try { fs.writeFileSync(boundsFile(), JSON.stringify(win.getNormalBounds())); } catch (e) { /* not important */ }
+    if (KEEP_IN_TRAY && !quitting && !SMOKE) {
+      event.preventDefault(); win.hide();
+      if (!toldAboutTray && tray) { toldAboutTray = true; tray.displayBalloon({ title: 'Chat Club is still running', content: "You'll still get message notifications. Right-click the icon by the clock to quit." }); }
+    }
   });
   win.on('closed', () => { win = null; });
 
@@ -237,6 +263,9 @@ function createWindow() {
 app.whenReady().then(async () => {
   if (process.platform === 'win32') app.setAppUserModelId('app.vercel.chat-club-one'); // notifications show the app's name
   if (process.platform !== 'darwin') Menu.setApplicationMenu(null);
+  makeTray();
+  // (the site can bring the window back, e.g. when you click a notification)
+  ipcMain.on('window:show', (e) => { if (isSite(e.senderFrame.url)) showWindow(); });
 
   // camera, microphone and notifications: yes for Chat Club itself, no for anything else
   const allowed = new Set(['media', 'notifications', 'fullscreen', 'clipboard-sanitized-write', 'display-capture']);
@@ -301,5 +330,5 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
+  if (process.platform !== 'darwin' && (quitting || !KEEP_IN_TRAY)) app.quit();
 });

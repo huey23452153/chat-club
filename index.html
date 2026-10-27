@@ -5097,7 +5097,8 @@
   // no-backend version.
   const NOTIFS_KEY = "chatclub_notifs_on";
   function notifsSupported(){ return "Notification" in window; }
-  function notifsOn(){ return notifsSupported() && Notification.permission === "granted" && localStorage.getItem(NOTIFS_KEY) === "1"; }
+  // (in the desktop app they start switched on, since it stays running in the tray just for this)
+  function notifsOn(){ const pref = localStorage.getItem(NOTIFS_KEY); return notifsSupported() && Notification.permission === "granted" && (pref === "1" || (pref === null && !!window.chatClubDesktop)); }
 
   function notifyNewMessage(senderName, text){
     playPingSound();
@@ -5109,7 +5110,7 @@
       if(notifsOn()){
         try{
           const n = new Notification(senderName, { body: text || "sent a message", icon: "icons/icon-192.png", tag: "chatclub-msg" });
-          n.onclick = () => { window.focus(); n.close(); };
+          n.onclick = () => { if(window.chatClubDesktop && window.chatClubDesktop.showWindow) window.chatClubDesktop.showWindow(); window.focus(); n.close(); };
         } catch(e){}
       }
     }
