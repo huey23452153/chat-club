@@ -28,6 +28,9 @@ test("profile pictures show for friends, and tapping a photo opens it full scree
   await a.click("#sendBtn");
   const row = b.locator(".msg-row.theirs").last();
   await expect(row.locator(".msg-pfp")).toBeVisible({ timeout: 15000 });
+  // ...and A sees their own picture next to their own name
+  await expect(a.locator(".msg-row.mine").last().locator(".msg-who .msg-pfp")).toBeVisible({ timeout: 15000 });
+  await expect(a.locator(".msg-row.mine").last().locator(".msg-who")).toContainText(nameA);
 
   // tapping the photo fills the screen; tapping again closes it
   await row.locator("img.msg-image").click();
