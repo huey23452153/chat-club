@@ -48,7 +48,8 @@ service cloud.firestore {
           resource.data.senderId == request.auth.uid ||
           request.resource.data.diff(resource.data).affectedKeys().hasOnly(["reactions", "poll"])
         );
-        allow delete: if isSignedIn() && resource.data.senderId == request.auth.uid;
+        // your own messages, or any message if you're huey (the admin)
+        allow delete: if isSignedIn() && (resource.data.senderId == request.auth.uid || request.auth.token.email == "huey@chatclub.local");
       }
 
       match /typing/{uid} {

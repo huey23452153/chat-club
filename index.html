@@ -1909,6 +1909,7 @@
   // Anyone can leave a request; only the admin's account can list or answer
   // them (firestore.rules), and only the server function can change a password.
   const ADMIN_AUTH_EMAIL = "huey@" + NAME_AUTH_DOMAIN;
+  const isAdmin = () => !!(auth.currentUser && auth.currentUser.email === ADMIN_AUTH_EMAIL);
   const MY_RESET_KEY = "chatclub_forgot_request"; // { id, secret, name } of the request this browser made
   let resetRequestsUnsub = null;
   let myResetUnsub = null;
@@ -2881,6 +2882,7 @@
             ${pillsHtml}
             <button class="reaction-add-btn" data-action="react-toggle-picker" data-id="${m.id}" title="React">🙂+</button>
             <button class="reaction-add-btn" data-action="reply-start" data-id="${m.id}" title="Reply">↩️ Reply</button>
+            ${isAdmin() ? `<button class="reaction-add-btn" data-action="admin-delete" data-id="${m.id}" title="Remove this message (only huey can)">🗑️</button>` : ""}
           </div>
           ${pickerHtml}`;
       }
@@ -2953,6 +2955,11 @@
       return;
     }
 
+    // huey (the admin) can remove anyone's message
+    if(btn.dataset.action === "admin-delete" && isAdmin()){
+      if(confirm("Remove this message for everyone?")) deleteDoc(doc(db, "groups", activeGroupId, "messages", id)).catch(() => alert("Couldn't remove it."));
+      return;
+    }
     if(btn.dataset.action === "delete"){
       editingMessageId = null;
       deleteDoc(doc(db, "groups", activeGroupId, "messages", id)).catch(() => {});
