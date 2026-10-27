@@ -18,6 +18,12 @@ test("autocorrect (when switched on) fixes typos as you type", async ({ page }) 
   await page.click('[data-close="customizeModal"]');
   await box.click(); await page.keyboard.type("Teh dog dont care, i think ");
   await expect(box).toHaveValue("The dog don't care, I think ");
+  // the big list and the common-words fixer (loaded from the internet), leaving slang and game names alone
+  await box.fill("");
+  await expect.poll(async () => { await box.fill(""); await box.click(); await page.keyboard.type("goverment "); return box.inputValue(); }, { timeout: 30000 }).toBe("government ");
+  await box.fill(""); await box.click();
+  await page.keyboard.type("plaeyr tahnks roblox lol bruh jeep ");
+  await expect(box).toHaveValue("player thanks roblox lol bruh jeep ");
 });
 
 test("pasting a GIF file attaches it still animated (not turned into a photo)", async ({ page }) => {

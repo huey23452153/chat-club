@@ -3123,6 +3123,61 @@
     $("messageInput").spellcheck = autocorrectOn();
     $("messageInput").setAttribute("autocorrect", autocorrectOn() ? "on" : "off");
   }
+  // The big autocorrect, loaded the first time autocorrect is on:
+  //  - about 4,000 common misspellings (from Wikipedia's list) → the right word
+  //  - for other typos: words one or two letters off that are among the 10,000
+  //    most common English words (the most common one wins)
+  //  - a real dictionary (typo.js + the en_US Hunspell dictionary) only to CHECK
+  //    words, so a real word is never "fixed" into a different one
+  // Slang, game and app names are left alone.
+  const AC_KEEP = new Set("lol lmao lmfao rofl bruh ngl idk tbh omg btw gg ez rn fr ong sus imo irl wyd hbu wbu ok okay yeah yea nah ya yo sup gonna wanna gotta kinda dunno lemme gimme ur u r k kk pls plz thx ty np smh af istg bro bruv mate aight ight cya gn gm hmu oof yeet pog poggers xd haha hahaha jk srsly lil fam deadass bet cap nocap slay mid lowkey highkey vibe vibes vibing goat rizz gyat skibidi ohio sigma bussin omw ikr tysm ilysm stfu wtf roblox minecraft fortnite discord youtube tiktok snapchat insta instagram google iphone ipad xbox playstation nintendo switch steam twitch chatclub huey".split(" "));
+  const AC_EXTRA = { helo: "hello", dosent: "doesn't", doesent: "doesn't", nwo: "now", ive: "I've" };
+  let acBig = null, acRank = null, acDict = null, acLoading = null;
+  function loadBigAutocorrect(){
+    if(acLoading) return acLoading;
+    acLoading = (async () => {
+      try{
+        const data = await (await fetch("autocorrect-words.json")).json();
+        acBig = data.fixes; acRank = new Map(data.common.map((w, i) => [w, i]));
+        await new Promise((ok, no) => { const sc = document.createElement("script"); sc.src = "https://cdn.jsdelivr.net/npm/typo-js@1.2.4/typo.js"; sc.onload = ok; sc.onerror = no; document.head.appendChild(sc); });
+        const base = "https://cdn.jsdelivr.net/npm/typo-js@1.2.4/dictionaries/en_US/en_US";
+        const [aff, dic] = await Promise.all([fetch(base + ".aff").then(r => r.text()), fetch(base + ".dic").then(r => r.text())]);
+        acDict = new window.Typo("en_US", aff, dic);
+      } catch(e){ /* offline: the small list still works */ }
+    })();
+    return acLoading;
+  }
+  const AC_LETTERS = "abcdefghijklmnopqrstuvwxyz";
+  function acEdits(w){
+    const out = new Set();
+    for(let i = 0; i <= w.length; i++){
+      const a = w.slice(0, i), b = w.slice(i);
+      if(b) out.add(a + b.slice(1));
+      if(b.length > 1) out.add(a + b[1] + b[0] + b.slice(2));
+      for(const c of AC_LETTERS){ if(b) out.add(a + c + b.slice(1)); out.add(a + c + b); }
+    }
+    return out;
+  }
+  function acMostCommon(cands, w, strict){
+    let best = null, bestRank = Infinity;
+    for(const c of cands){
+      if(strict && (c[0] !== w[0] || Math.abs(c.length - w.length) > 1)) continue;
+      const r = acRank.get(c); if(r !== undefined && r < bestRank){ bestRank = r; best = c; }
+    }
+    return best;
+  }
+  function bigFix(word){
+    const w = word.toLowerCase();
+    if(AC_KEEP.has(w)) return null;
+    const known = AUTOCORRECT_WORDS[w] || AC_EXTRA[w] || (acBig && acBig[w]);
+    if(known) return known;
+    if(!acRank || !acDict || w.length < 4 || acRank.has(w)) return null;
+    if(acDict.check(w) || acDict.check(word) || acDict.check(w[0].toUpperCase() + w.slice(1))) return null;
+    const e1 = acEdits(w);
+    let fix = acMostCommon(e1, w, false);
+    if(!fix && w.length >= 6){ const e2 = new Set(); for(const e of e1) for(const x of acEdits(e)) e2.add(x); fix = acMostCommon(e2, w, true); }
+    return fix;
+  }
   function autocorrectLastWord(){
     if(!autocorrectOn()) return;
     const el = $("messageInput"), end = el.selectionStart;
@@ -3131,7 +3186,7 @@
     if(!/[\s.,!?;:]/.test(sep)) return;
     const m = before.slice(0, -1).match(/(^|[\s(])([A-Za-z]+)$/);
     if(!m) return;
-    const word = m[2], fix = AUTOCORRECT_WORDS[word.toLowerCase()];
+    const word = m[2], fix = bigFix(word);
     if(!fix) return;
     const out = word[0] === word[0].toUpperCase() && word.length > 1 ? fix[0].toUpperCase() + fix.slice(1) : fix;
     const start = end - 1 - word.length;
@@ -3139,7 +3194,8 @@
     const caret = start + out.length + 1; el.setSelectionRange(caret, caret);
   }
   $("messageInput").addEventListener("input", (e) => { if(e.inputType === "insertText" || e.inputType === "insertLineBreak") autocorrectLastWord(); });
-  $("autocorrectToggleBtn").addEventListener("click", () => { localStorage.setItem(AUTOCORRECT_KEY, autocorrectOn() ? "0" : "1"); updateAutocorrectBtn(); });
+  $("autocorrectToggleBtn").addEventListener("click", () => { localStorage.setItem(AUTOCORRECT_KEY, autocorrectOn() ? "0" : "1"); updateAutocorrectBtn(); if(autocorrectOn()) loadBigAutocorrect(); });
+  if(autocorrectOn()) loadBigAutocorrect();
   updateAutocorrectBtn();
 
   function applyWordSwaps(text){
