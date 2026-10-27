@@ -266,6 +266,8 @@ app.whenReady().then(async () => {
   makeTray();
   // (the site can bring the window back, e.g. when you click a notification)
   ipcMain.on('window:show', (e) => { if (isSite(e.senderFrame.url)) showWindow(); });
+  // (after a pop-up box on Windows the page stops getting key presses: blur and refocus fixes it)
+  ipcMain.on('window:refocus', (e) => { if (!win || !isSite(e.senderFrame.url)) return; win.blur(); win.focus(); win.webContents.focus(); });
 
   // camera, microphone and notifications: yes for Chat Club itself, no for anything else
   const allowed = new Set(['media', 'notifications', 'fullscreen', 'clipboard-sanitized-write', 'display-capture']);

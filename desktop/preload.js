@@ -3,6 +3,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('chatClubDesktop', {
   showWindow: () => ipcRenderer.send('window:show'),
+  refocus: () => ipcRenderer.send('window:refocus'),
   faceWake: {
     get: () => ipcRenderer.invoke('facewake:get'),
     set: (on) => ipcRenderer.invoke('facewake:set', !!on),

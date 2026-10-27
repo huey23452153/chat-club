@@ -43,9 +43,15 @@ test("huey can remove anyone's message; other people only get the button on noth
   await expect(friend.locator(".msg-row", { hasText: "hi from huey" })).toBeVisible({ timeout: 15000 });
   await expect(friend.locator('[data-action="admin-delete"]')).toHaveCount(0);
 
-  huey.once("dialog", (d) => d.accept());
-  await fromFriend.locator('[data-action="admin-delete"]').click();
+  // tap once: it asks "Remove?" (no pop-up box); tap again to remove
+  const bin = fromFriend.locator('[data-action="admin-delete"]');
+  await bin.click();
+  await expect(bin).toHaveText("Remove?");
+  await bin.click();
   await expect(huey.locator(".msg-row", { hasText: "a message huey will remove" })).toHaveCount(0, { timeout: 15000 });
   await expect(friend.locator(".msg-row", { hasText: "a message huey will remove" })).toHaveCount(0, { timeout: 15000 });
+  // and huey can keep typing straight away
+  await huey.keyboard.type("still typing");
+  await expect(huey.locator("#messageInput")).toHaveValue("still typing");
   await ctxH.close(); await ctxF.close();
 });

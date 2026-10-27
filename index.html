@@ -352,6 +352,7 @@
   .reaction-pill:hover{ transform: scale(1.06); }
   .reaction-pill:active{ transform: scale(0.94); }
   .reaction-pill.mine{ border-color: var(--teal); background: rgba(29,120,116,0.12); }
+  .reaction-add-btn.armed{ background:#e5484d; color:#fff; border-color:#e5484d; }
   .reaction-add-btn{
     background:none; border:none; font-size:13px; opacity:.45; padding:2px 4px;
     border-radius: 8px; color: var(--ink-soft);
@@ -1910,6 +1911,14 @@
   // them (firestore.rules), and only the server function can change a password.
   const ADMIN_AUTH_EMAIL = "huey@" + NAME_AUTH_DOMAIN;
   const isAdmin = () => !!(auth.currentUser && auth.currentUser.email === ADMIN_AUTH_EMAIL);
+  // (in the desktop app on Windows, a pop-up box like confirm() leaves the page
+  // unable to get key presses; the app (1.0.8+) can hand the keyboard back after one)
+  if(window.chatClubDesktop && window.chatClubDesktop.refocus){
+    for(const name of ["alert", "confirm", "prompt"]){
+      const original = window[name].bind(window);
+      window[name] = (...args) => { const answer = original(...args); window.chatClubDesktop.refocus(); return answer; };
+    }
+  }
   const MY_RESET_KEY = "chatclub_forgot_request"; // { id, secret, name } of the request this browser made
   let resetRequestsUnsub = null;
   let myResetUnsub = null;
@@ -2955,9 +2964,17 @@
       return;
     }
 
-    // huey (the admin) can remove anyone's message
+    // huey (the admin) can remove anyone's message: tap 🗑️, then tap "Remove?" to be
+    // sure. (No pop-up box: in the desktop app on Windows those stop the typing box
+    // getting keys afterwards.)
     if(btn.dataset.action === "admin-delete" && isAdmin()){
-      if(confirm("Remove this message for everyone?")) deleteDoc(doc(db, "groups", activeGroupId, "messages", id)).catch(() => alert("Couldn't remove it."));
+      if(btn.dataset.armed){
+        deleteDoc(doc(db, "groups", activeGroupId, "messages", id)).catch(() => showToast("Chat Club", "Couldn't remove that message."));
+        messageInput.focus();
+      } else {
+        btn.dataset.armed = "1"; btn.textContent = "Remove?"; btn.classList.add("armed");
+        setTimeout(() => { if(btn.isConnected){ delete btn.dataset.armed; btn.textContent = "🗑️"; btn.classList.remove("armed"); } }, 3000);
+      }
       return;
     }
     if(btn.dataset.action === "delete"){
