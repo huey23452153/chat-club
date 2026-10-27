@@ -383,7 +383,7 @@
   .reaction-picker{
     display:flex; gap:2px; margin: 4px 4px 0;
     background: var(--surface); border: 1px solid var(--line);
-    border-radius: 12px; padding: 4px 6px; width: fit-content;
+    border-radius: 12px; padding: 4px 6px; width: fit-content; max-width: 100%; flex-wrap: wrap;
   }
   .reaction-picker button{
     background:none; border:none; font-size:18px; padding:2px 5px; border-radius:8px;
@@ -1580,6 +1580,10 @@
     <h4>Notifications</h4>
     <p class="modal-sub" id="notifsSub">Get a popup + sound for new messages when this tab isn't focused.</p>
     <button class="big-btn secondary" id="notifsToggleBtn" style="margin-bottom:20px;">Turn on notifications</button>
+
+    <h4>Autocorrect</h4>
+    <p class="modal-sub">Fixes common typos as you type (like "teh" → "the", "dont" → "don't") and underlines misspelled words.</p>
+    <button class="big-btn secondary" id="autocorrectToggleBtn" style="margin-bottom:20px;">Turn on autocorrect</button>
 
     <div class="modal-actions">
       <button class="big-btn secondary" data-close="customizeModal">Done</button>
@@ -2819,7 +2823,7 @@
     if(wasNearBottom) el.scrollTop = el.scrollHeight;
   }
 
-  const QUICK_EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "🎉"];
+  const QUICK_EMOJIS = ["👍", "❤️", "😂", "🔥", "💀", "😮", "😢", "🎉"];
   let reactionPickerForId = null;
 
   function renderMessages(msgs){
@@ -3101,6 +3105,36 @@
     ")(?![a-zA-Z])",
     "gi"
   );
+  // Autocorrect (optional, in Customize): when you finish a word (space or
+  // punctuation), a common typo is swapped for the right word, keeping a
+  // capital letter at the start. Slang like "u" or "gonna" is left alone.
+  const AUTOCORRECT_KEY = "chatclub_autocorrect";
+  const AUTOCORRECT_WORDS = {"teh":"the","hte":"the","adn":"and","nad":"and","taht":"that","tht":"that","thta":"that","jsut":"just","juts":"just","waht":"what","whta":"what","wehn":"when","whne":"when","wnat":"want","wnt":"want","amke":"make","mkae":"make","maek":"make","becuase":"because","becasue":"because","beacuse":"because","recieve":"receive","freind":"friend","freinds":"friends","frend":"friend","frends":"friends","thier":"their","wich":"which","whihc":"which","realy":"really","relaly":"really","beleive":"believe","definately":"definitely","definatly":"definitely","wierd":"weird","untill":"until","tommorow":"tomorrow","tomorow":"tomorrow","alot":"a lot","abotu":"about","aobut":"about","baout":"about","hwo":"how","woudl":"would","woud":"would","coudl":"could","shoudl":"should","thnk":"think","thikn":"think","knwo":"know","konw":"know","nkow":"know","yuo":"you","yoru":"your","oyu":"you","peopel":"people","poeple":"people","becaus":"because","agian":"again","aswell":"as well","ahve":"have","hvae":"have","ahd":"had","aer":"are","wiht":"with","iwth":"with","fo":"of","fro":"for","ot":"to","ti":"it","si":"is","nto":"not","onyl":"only","diffrent":"different","diffrence":"difference","probaly":"probably","probly":"probably","soemthing":"something","somthing":"something","evryone":"everyone","everone":"everyone","anyways":"anyway","dont":"don't","cant":"can't","wont":"won't","didnt":"didn't","doesnt":"doesn't","isnt":"isn't","wasnt":"wasn't","arent":"aren't","werent":"weren't","havent":"haven't","hasnt":"hasn't","couldnt":"couldn't","wouldnt":"wouldn't","shouldnt":"shouldn't","thats":"that's","whats":"what's","theres":"there's","heres":"here's","im":"I'm","ive":"I've","youre":"you're","theyre":"they're","hes":"he's","shes":"she's","i":"I"};
+  const autocorrectOn = () => localStorage.getItem(AUTOCORRECT_KEY) === "1";
+  function updateAutocorrectBtn(){
+    $("autocorrectToggleBtn").textContent = autocorrectOn() ? "Turn off autocorrect" : "Turn on autocorrect";
+    $("messageInput").spellcheck = autocorrectOn();
+    $("messageInput").setAttribute("autocorrect", autocorrectOn() ? "on" : "off");
+  }
+  function autocorrectLastWord(){
+    if(!autocorrectOn()) return;
+    const el = $("messageInput"), end = el.selectionStart;
+    if(end !== el.selectionEnd || end < 2) return;
+    const before = el.value.slice(0, end), sep = before.slice(-1);
+    if(!/[\s.,!?;:]/.test(sep)) return;
+    const m = before.slice(0, -1).match(/(^|[\s(])([A-Za-z]+)$/);
+    if(!m) return;
+    const word = m[2], fix = AUTOCORRECT_WORDS[word.toLowerCase()];
+    if(!fix) return;
+    const out = word[0] === word[0].toUpperCase() && word.length > 1 ? fix[0].toUpperCase() + fix.slice(1) : fix;
+    const start = end - 1 - word.length;
+    el.value = el.value.slice(0, start) + out + el.value.slice(end - 1);
+    const caret = start + out.length + 1; el.setSelectionRange(caret, caret);
+  }
+  $("messageInput").addEventListener("input", (e) => { if(e.inputType === "insertText" || e.inputType === "insertLineBreak") autocorrectLastWord(); });
+  $("autocorrectToggleBtn").addEventListener("click", () => { localStorage.setItem(AUTOCORRECT_KEY, autocorrectOn() ? "0" : "1"); updateAutocorrectBtn(); });
+  updateAutocorrectBtn();
+
   function applyWordSwaps(text){
     if(!text) return text;
     return text.replace(WORD_SWAP_REGEX, (...args) => {
@@ -3310,20 +3344,66 @@
     $("imagePreviewThumb").src = "";
   }
 
+  function showPendingImage(dataUrl){
+    pendingImageDataUrl = dataUrl;
+    $("imagePreviewThumb").src = dataUrl;
+    $("imagePreviewStrip").classList.add("show");
+  }
+  async function attachImageFile(file){
+    try{
+      showPendingImage((file.type === "image/gif" && file.size <= MAX_GIF_BYTES)
+        ? await readFileAsDataUrl(file)
+        : await compressImageToDataUrl(file));
+    } catch(err){ /* not an image we can read */ }
+  }
+
   $("attachPhotoBtn").addEventListener("click", () => $("photoInput").click());
   $("photoInput").addEventListener("change", async () => {
     const file = $("photoInput").files[0];
     $("photoInput").value = ""; // lets the same file be picked again later
-    if(!file) return;
-    try{
-      pendingImageDataUrl = (file.type === "image/gif" && file.size <= MAX_GIF_BYTES)
-        ? await readFileAsDataUrl(file)
-        : await compressImageToDataUrl(file);
-    } catch(err){
+    if(file) attachImageFile(file);
+  });
+
+  // Paste a GIF: copy one anywhere (right-click → Copy image, or copy its link)
+  // and paste it into the message box. Browsers copy a GIF as a still picture,
+  // so the GIF's own address (which comes along with it) is fetched instead,
+  // and it's kept moving. Giphy page links are turned into the GIF itself, and
+  // a GIF that's too big to fit in a message tries Giphy's smaller versions.
+  const isGifUrl = (u) => /^https:\/\//i.test(u) && (/\.gif([?#]|$)/i.test(u) || /[/.]giphy\.com\//i.test(u) || /[/.]tenor\.com\//i.test(u));
+  function gifCandidates(url){
+    const id = (url.match(/giphy\.com\/(?:gifs|media|embed)\/(?:[\w-]*-)?([A-Za-z0-9]{8,})/i) || [])[1];
+    if(id) return ["giphy.gif", "200.gif", "200w.gif", "100.gif"].map(f => "https://media.giphy.com/media/" + id + "/" + f);
+    return [url];
+  }
+  async function attachGifFromUrl(url){
+    for(const u of gifCandidates(url)){
+      try{
+        const res = await fetch(u, { mode: "cors" });
+        if(!res.ok) continue;
+        const blob = await res.blob();
+        if(!/^image\//.test(blob.type)) continue;
+        if(blob.type === "image/gif" && blob.size > MAX_GIF_BYTES) continue;
+        showPendingImage(blob.type === "image/gif" ? await readFileAsDataUrl(blob) : await compressImageToDataUrl(blob));
+        return true;
+      } catch(e){ /* that site doesn't share its pictures: try the next one */ }
+    }
+    return false;
+  }
+  messageInput.addEventListener("paste", async (e) => {
+    const cd = e.clipboardData; if(!cd) return;
+    const file = [...(cd.files || [])].find(f => f.type.startsWith("image/"));
+    const html = cd.getData("text/html") || "", text = (cd.getData("text/plain") || "").trim();
+    const src = (html.match(/<img[^>]+src=["']([^"']+)["']/i) || [])[1];
+    const gifUrl = [src, text].find(u => u && isGifUrl(u));
+    if(gifUrl){
+      e.preventDefault();
+      if(await attachGifFromUrl(gifUrl)) return;
+      if(file) return attachImageFile(file);
+      showToast("GIF", "Couldn't get that GIF (it may be too big). Try another one.");
+      if(text) messageInput.value += text;
       return;
     }
-    $("imagePreviewThumb").src = pendingImageDataUrl;
-    $("imagePreviewStrip").classList.add("show");
+    if(file){ e.preventDefault(); attachImageFile(file); }
   });
   $("removeImagePreviewBtn").addEventListener("click", clearPendingImage);
 
