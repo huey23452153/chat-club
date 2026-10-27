@@ -463,6 +463,16 @@
     object-fit:cover; cursor:pointer;
   }
   .bubble img.msg-image + .msg-text{ margin-top:6px; }
+  /* GIF search */
+  .gif-panel{ position:fixed; left:50%; bottom:84px; transform:translateX(-50%); width:min(420px, calc(100vw - 24px)); height:min(440px, 60vh); z-index:300; display:none; flex-direction:column; gap:8px; padding:10px; background:var(--surface); border:1px solid var(--line); border-radius:16px; box-shadow:0 12px 30px -8px rgba(0,0,0,.35); }
+  .gif-panel.show{ display:flex; }
+  .gif-panel-top{ display:flex; gap:8px; }
+  .gif-panel-top input{ flex:1; padding:8px 12px; border-radius:10px; border:1px solid var(--line); font:inherit; background:var(--bg); color:var(--ink); }
+  .gif-panel-top button{ background:none; border:none; font-size:16px; cursor:pointer; color:var(--ink); }
+  .gif-grid{ flex:1; overflow-y:auto; display:grid; grid-template-columns:repeat(3, 1fr); gap:6px; align-content:start; }
+  .gif-grid img{ width:100%; height:90px; object-fit:cover; border-radius:8px; cursor:pointer; background:var(--bg); }
+  .gif-grid .gif-msg{ grid-column:1/-1; text-align:center; color:var(--ink-soft); padding:20px 8px; font-size:14px; }
+  .gif-credit{ font-size:10px; text-align:right; color:var(--ink-soft); }
   /* tap a photo: it fills the screen; tap anywhere (or Esc) to close */
   .image-viewer{ position:fixed; inset:0; z-index:400; background:rgba(0,0,0,.88); display:none; align-items:center; justify-content:center; padding:16px; cursor:zoom-out; }
   .image-viewer.show{ display:flex; }
@@ -1245,6 +1255,11 @@
     <button class="decline" id="declineCallBtn">✕ Decline</button>
   </div>
 </div>
+<div class="gif-panel" id="gifPanel">
+  <div class="gif-panel-top"><input id="gifSearch" type="search" placeholder="Search GIFs…" autocomplete="off" maxlength="60"><button id="gifClose" title="Close">✕</button></div>
+  <div class="gif-grid" id="gifGrid"></div>
+  <div class="gif-credit">Powered by GIPHY</div>
+</div>
 <div class="image-viewer" id="imageViewer"><img id="imageViewerImg" alt="Photo, full size"><button id="imageViewerClose" title="Close">✕</button></div>
 <div class="call-overlay" id="callOverlay">
   <div class="call-pip-bar" id="callPipBar">
@@ -1417,6 +1432,7 @@
           <div class="composer">
             <input type="file" id="photoInput" accept="image/*" style="display:none;">
             <button class="attach-btn" id="attachPhotoBtn" title="Attach a photo">📷</button>
+            <button class="attach-btn" id="gifBtn" title="Find a GIF" style="font-weight:800;font-size:12px">GIF</button>
             <button class="attach-btn" id="openPollBtn" title="Create a poll">📊</button>
             <textarea id="messageInput" rows="1" maxlength="500" placeholder="Type a friendly message..."></textarea>
             <button class="send-btn" id="sendBtn">
@@ -2927,7 +2943,8 @@
       row.dataset.msgId = m.id;
       const time = m.createdAt?.toDate ? m.createdAt.toDate() : null;
       const timeStr = time ? time.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", hour12: true }) : "";
-      const editedTag = m.editedAt ? " · edited" : "";
+      // (a just-edited message shows "edited" straight away, before the server has stamped the time)
+      const editedTag = m.editedAt !== undefined ? " · edited" : "";
 
       if(mine && editingMessageId === m.id){
         row.innerHTML = `
@@ -2958,7 +2975,7 @@
           : "";
         const imageHtml = isValidImageDataUrl(m.imageData)
           ? `<img class="msg-image" src="${m.imageData}" alt="Shared photo">`
-          : "";
+          : isGiphyGifUrl(m.gifUrl) ? `<img class="msg-image" src="${m.gifUrl}" alt="GIF" loading="lazy" referrerpolicy="no-referrer">` : "";
         const textHtml = m.text ? `<div class="msg-text">${linkifyText(m.text)}</div>` + linkPreviewHtml(m.text) : "";
         const pollHtml = m.poll ? renderPoll(m.id, m.poll) : "";
         const bubbleInner = replyQuoteHtml + imageHtml + textHtml + pollHtml;
@@ -3447,7 +3464,9 @@
   //  SEND MESSAGE + SPAM COOLDOWN
   // =========================================================================
   const messageInput = $("messageInput"), sendBtn = $("sendBtn"), composerHint = $("composerHint");
-  let pendingImageDataUrl = null;
+  let pendingImageDataUrl = null, pendingGifUrl = null;
+  // only GIPHY's own picture addresses (that's where GIF search finds them)
+  function isGiphyGifUrl(u){ return typeof u === "string" && u.length < 300 && /^https:\/\/media\d*\.giphy\.com\/media\/(?:[\w.-]+\/)?[\w-]+\/[\w.-]+\.gif(\?[\w=&.-]*)?$/.test(u); }
   const MAX_IMAGE_DIMENSION = 1000; // keeps the base64 doc field well under Firestore's 1MB doc limit
 
   messageInput.addEventListener("input", () => {
@@ -3518,6 +3537,32 @@
   }
 
   $("attachPhotoBtn").addEventListener("click", () => $("photoInput").click());
+
+  // GIF search: the GIF button opens a panel; type to search (what's trending
+  // shows first), tap one to send it straight away
+  let gifSearchTimer = null, gifSearchSeq = 0;
+  async function loadGifs(q){
+    const seq = ++gifSearchSeq, grid = $("gifGrid");
+    grid.innerHTML = '<div class="gif-msg">Loading…</div>';
+    try{
+      const res = await fetch("/api/gifs?q=" + encodeURIComponent(q));
+      const data = await res.json();
+      if(seq !== gifSearchSeq) return;
+      if(!res.ok){ grid.innerHTML = `<div class="gif-msg">${escapeHtml(data.error || "GIF search isn't working right now.")}</div>`; return; }
+      const gifs = (data.gifs || []).filter(g => isGiphyGifUrl(g.url) && isGiphyGifUrl(g.preview));
+      grid.innerHTML = gifs.length ? gifs.map(g => `<img src="${g.preview}" data-gif="${g.url}" alt="GIF" loading="lazy" referrerpolicy="no-referrer">`).join("") : '<div class="gif-msg">No GIFs found. Try another word.</div>';
+    } catch(e){ if(seq === gifSearchSeq) grid.innerHTML = '<div class="gif-msg">Couldn\'t load GIFs. Check your internet.</div>'; }
+  }
+  function openGifPanel(){ $("gifPanel").classList.add("show"); $("gifSearch").value = ""; loadGifs(""); $("gifSearch").focus(); }
+  function closeGifPanel(){ $("gifPanel").classList.remove("show"); messageInput.focus(); }
+  $("gifBtn").addEventListener("click", () => $("gifPanel").classList.contains("show") ? closeGifPanel() : openGifPanel());
+  $("gifClose").addEventListener("click", closeGifPanel);
+  $("gifSearch").addEventListener("input", () => { clearTimeout(gifSearchTimer); gifSearchTimer = setTimeout(() => loadGifs($("gifSearch").value.trim()), 350); });
+  $("gifSearch").addEventListener("keydown", (e) => { if(e.key === "Escape") closeGifPanel(); });
+  $("gifGrid").addEventListener("click", (e) => {
+    const img = e.target.closest("img[data-gif]"); if(!img || !isGiphyGifUrl(img.dataset.gif)) return;
+    pendingGifUrl = img.dataset.gif; closeGifPanel(); trySendMessage();
+  });
   $("photoInput").addEventListener("change", async () => {
     const file = $("photoInput").files[0];
     $("photoInput").value = ""; // lets the same file be picked again later
@@ -3569,8 +3614,9 @@
 
   async function trySendMessage(){
     const text = messageInput.value.trim();
-    const imageDataUrl = pendingImageDataUrl;
-    if((!text && !imageDataUrl) || !activeGroupId) return;
+    const imageDataUrl = pendingImageDataUrl, gifUrl = pendingGifUrl;
+    pendingGifUrl = null;
+    if((!text && !imageDataUrl && !gifUrl) || !activeGroupId) return;
 
     const sinceLast = Date.now() - lastSentAt;
     if(sinceLast < SEND_COOLDOWN_MS){
@@ -3600,6 +3646,7 @@
         createdAt: serverTimestamp()
       };
       if(imageDataUrl) payload.imageData = imageDataUrl;
+      if(gifUrl) payload.gifUrl = gifUrl;
       if(replySnapshot){
         payload.replyTo = {
           id: replySnapshot.id,

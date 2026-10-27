@@ -38,3 +38,14 @@ test("pasting a GIF file attaches it still animated (not turned into a photo)", 
   await expect(page.locator("#imagePreviewStrip")).toHaveClass(/show/);
   await expect(page.locator("#imagePreviewThumb")).toHaveAttribute("src", /^data:image\/gif;base64,/);
 });
+
+test("the GIF button opens GIF search (and says so when it isn't set up yet)", async ({ page }) => {
+  await signup(page, uniqueName("Cal"));
+  await createGroup(page, "Gif Search Chat");
+  await page.click("#gifBtn");
+  await expect(page.locator("#gifPanel")).toHaveClass(/show/);
+  // the test server has no GIPHY key, so it should explain instead of breaking
+  await expect(page.locator("#gifGrid")).toContainText(/not switched on|GIF/i, { timeout: 10000 });
+  await page.click("#gifClose");
+  await expect(page.locator("#gifPanel")).not.toHaveClass(/show/);
+});
