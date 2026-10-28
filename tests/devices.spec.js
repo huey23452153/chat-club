@@ -28,5 +28,12 @@ test("choosing the mic and camera in a call", async ({ browser }) => {
   await expect.poll(() => pageA.evaluate(() => document.getElementById("localVideo").srcObject.getVideoTracks()[0]?.readyState)).toBe("live");
   await pageA.click("#deviceBtn");
   await expect(pageA.locator("#devicePanel")).toBeHidden();
+  // minimised (and at the smallest size), the hang up button still fits inside the little call box
+  await pageA.click("#pipToggleBtn");
+  for (const w of [null, 160]) {
+    if (w) await pageA.evaluate((w) => { document.getElementById("callOverlay").style.width = w + "px"; }, w);
+    const fits = await pageA.evaluate(() => { const o = document.getElementById("callOverlay").getBoundingClientRect(), b = document.getElementById("endCallBtn").getBoundingClientRect(); return b.width > 0 && b.left >= o.left - 1 && b.right <= o.right + 1 && b.bottom <= o.bottom + 1; });
+    expect(fits).toBe(true);
+  }
   await ctxA.close(); await ctxB.close();
 });

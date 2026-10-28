@@ -36,6 +36,14 @@ test("watch YouTube together, queue, and vote to skip", async ({ browser }) => {
   await expect(pageB.locator("#watchNow")).toContainText("Me at the zoo");
   await expect(pageB.locator("#watchPanel iframe")).toBeVisible({ timeout: 20000 });
 
+  // both play the same moment: within a quarter of a second of each other
+  const videoTime = async (p) => { const f = p.frames().find((x) => x.url().includes("youtube.com/embed")); return f ? f.evaluate(() => { const v = document.querySelector("video"); return v && !v.paused ? v.currentTime : null; }).catch(() => null) : null; };
+  await expect.poll(async () => (await videoTime(pageA)) !== null && (await videoTime(pageB)) !== null, { timeout: 30000 }).toBe(true);
+  await pageA.waitForTimeout(6000);
+  const [ta, tb] = await Promise.all([videoTime(pageA), videoTime(pageB)]);
+  console.log("apart by", Math.abs(ta - tb).toFixed(3), "s");
+  expect(Math.abs(ta - tb)).toBeLessThan(0.4);
+
   // a second one waits in the list
   await pageB.fill("#watchUrl", "https://youtu.be/dQw4w9WgXcQ");
   await pageB.click("#watchAddBtn");
