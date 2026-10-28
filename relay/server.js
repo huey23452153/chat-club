@@ -27,7 +27,9 @@ const server = http.createServer((req, res) => {
   }
   res.writeHead(200,{...headers,'content-type':'text/plain'});res.end('dust crawler relay ok, '+rooms.size+' rooms');
 });
-const wss = new WebSocketServer({ server, maxPayload: MAX_MSG });
+// (big enough for a Chat Club photo on the backup chat; the game rooms still only pass on MAX_MSG-sized messages)
+const MAX_PHOTO = 950000;
+const wss = new WebSocketServer({ server, maxPayload: MAX_PHOTO + 4000 });
 
 // CHAT CLUB "WHO'S ONLINE": each open Chat Club connects to /presence?uid=… and says which friends it wants to
 // know about ({ watch: [uids] }); this tells it which of them are connected right now, and again whenever one comes
@@ -67,7 +69,7 @@ function presenceConnection(ws, q) {
 const chats = new Map();                     // groupId -> { msgs: [], subs: Set<socket> }
 const okGroup = (s) => typeof s === 'string' && /^[A-Za-z0-9]{10,64}$/.test(s);
 const okGif = (u) => typeof u === 'string' && u.length < 300 && /^https:\/\/media\d*\.giphy\.com\/media\/(?:[\w.-]+\/)?[\w-]+\/[\w.-]+\.gif(\?[\w=&.-]*)?$/.test(u);
-const KEEP_MS = 12 * 3600 * 1000, KEEP_N = 200;
+const KEEP_MS = 12 * 3600 * 1000, KEEP_N = 200, KEEP_PHOTOS = 15;
 const chatOf = (id) => { let c = chats.get(id); if (!c) { c = { msgs: [], subs: new Set() }; chats.set(id, c); } return c; };
 function chatConnection(ws, q) {
   const uid = q.get('uid'), name = String(q.get('name') || 'Friend').replace(/[\u0000-\u001f]/g, '').slice(0, 30);
@@ -89,9 +91,12 @@ function chatConnection(ws, q) {
       const out = JSON.stringify({ t: 'del', groupId: m.groupId, id: m.id }); for (const sub of c.subs) if (sub.readyState === 1) sub.send(out);
     } else if (m.t === 'msg' && ws.groups.has(m.groupId)) {
       const text = typeof m.text === 'string' ? m.text.slice(0, 500) : '', gifUrl = okGif(m.gifUrl) ? m.gifUrl : undefined;
-      if (!text && !gifUrl) return;
-      const msg = { id: 'b' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8), groupId: m.groupId, senderId: uid, senderName: name, text, gifUrl, at: Date.now() };
+      const imageData = typeof m.imageData === 'string' && m.imageData.length <= MAX_PHOTO && /^data:image\/(jpeg|png|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(m.imageData) ? m.imageData : undefined;
+      if (!text && !gifUrl && !imageData) return;
+      const msg = { id: 'b' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8), groupId: m.groupId, senderId: uid, senderName: name, text, gifUrl, imageData, at: Date.now() };
       const c = chatOf(m.groupId); c.msgs.push(msg); if (c.msgs.length > KEEP_N) c.msgs.splice(0, c.msgs.length - KEEP_N);
+      // (photos take a lot of memory: only the newest few in each chat keep theirs)
+      let photos = 0; for (let i = c.msgs.length - 1; i >= 0; i--) if (c.msgs[i].imageData && ++photos > KEEP_PHOTOS) { c.msgs[i].imageData = undefined; c.msgs[i].photoGone = true; }
       const out = JSON.stringify({ t: 'msg', msg }); for (const sub of c.subs) if (sub.readyState === 1) sub.send(out);
     }
   });
@@ -270,7 +275,7 @@ wss.on('connection', (ws, req) => {
   ws.send(JSON.stringify({ t: 'relay-ok' }));
   ws.on('pong', () => { ws.alive = true; });
   ws.on('message', (data) => {
-    const s=String(data);
+    const s=String(data); if(s.length>MAX_MSG)return;
     if(s.includes('"room-info"')){
       if(ws!==room.host)return;
       try{const m=JSON.parse(s);if(m.t==='room-info'){
