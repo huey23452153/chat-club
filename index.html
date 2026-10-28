@@ -2054,10 +2054,12 @@
     $("resetBox").style.display = "none";
   }
 
-  async function tellAdminIForgot(name){
+  let firebaseResetBroken = false; // (the Firebase request could not be read: Firebase has run out for the day)
+  async function tellAdminIForgot(name, forceRelay = false){
     if(name.length > 24) return false;
     const mine = myResetRequest();
-    if(mine && mine.name.toLowerCase() === name.toLowerCase()){ watchMyResetRequest(); return true; } // already asked
+    // already asked: keep waiting on that one (unless it was left in Firebase and Firebase is out, then ask again on the relay)
+    if(!forceRelay && mine && mine.name.toLowerCase() === name.toLowerCase() && (mine.relay || !firebaseResetBroken)){ watchMyResetRequest(); return true; }
     try{
       const bytes = crypto.getRandomValues(new Uint8Array(24));
       const secret = [...bytes].map(x => x.toString(16).padStart(2, "0")).join("");
@@ -2065,7 +2067,7 @@
       const keyHash = [...new Uint8Array(digest)].map(x => x.toString(16).padStart(2, "0")).join("");
       // Firebase first; if it has run out for the day (or doesn't answer in a few seconds), the relay
       let id = null, relay = false;
-      if(!backupMode && !new URLSearchParams(location.search).has("backup")){ // (?backup: try the relay way)
+      if(!forceRelay && !firebaseResetBroken && !backupMode && !new URLSearchParams(location.search).has("backup")){ // (?backup: try the relay way)
         try{
           const ref = await Promise.race([
             addDoc(collection(db, "resetRequests"), { name, keyHash, status: "pending", createdAt: serverTimestamp() }),
@@ -2107,10 +2109,20 @@
       open();
       return;
     }
+    // Firebase out for the day (an error, or just no answer for a while): ask again the backup way, so huey still gets it
+    let heard = false;
+    const giveUp = () => {
+      if(heard || myResetRequest()?.id !== mine.id) return;
+      firebaseResetBroken = true;
+      if(myResetUnsub){ myResetUnsub(); myResetUnsub = null; }
+      tellAdminIForgot(mine.name, true).catch(() => {});
+    };
+    const noAnswer = setTimeout(giveUp, 10000);
     myResetUnsub = onSnapshot(doc(db, "resetRequests", mine.id), (snap) => {
+      if(!snap.metadata.fromCache){ heard = true; clearTimeout(noAnswer); }
       const status = snap.exists() ? snap.data().status : "gone";
       myResetStatus(mine, status, !snap.metadata.fromCache);
-    }, () => { /* can't reach it right now: the box keeps waiting */ });
+    }, (err) => { clearTimeout(noAnswer); if(isQuotaError(err)) giveUp(); });
   }
   function myResetStatus(mine, status, sure){
     if(auth.currentUser) return; // logged in some other way meanwhile
