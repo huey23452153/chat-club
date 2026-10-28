@@ -747,6 +747,19 @@
   /* ---------- Pure Black theme: fix two spots that reuse --teal-dark as
      text against different backgrounds, so it stays readable ---------- */
   html[data-theme="black"] .pill-btn{ color: var(--ink); }
+  /* 📺 watch YouTube together */
+  .watch-panel{ border-bottom:1px solid var(--line); padding:10px 14px; display:flex; flex-direction:column; gap:8px; background: var(--surface); }
+  .watch-player{ position:relative; width:100%; max-width:640px; margin:0 auto; aspect-ratio:16/9; max-height:38vh; background:#000; border-radius:12px; overflow:hidden; }
+  .watch-player iframe, #ytPlayer{ position:absolute; inset:0; width:100%; height:100%; border:0; }
+  .watch-empty{ position:absolute; inset:0; display:flex; align-items:center; justify-content:center; text-align:center; padding:12px; color:#ddd; font-size:14px; }
+  .watch-now{ font-weight:800; font-size:14px; color: var(--ink); text-align:center; }
+  .watch-row{ display:flex; gap:8px; justify-content:center; flex-wrap:wrap; }
+  .watch-row input{ flex:1; min-width:0; max-width:420px; padding:8px 12px; border-radius:999px; border:1.5px solid var(--line); background: var(--bg); color: var(--ink); font-size:14px; }
+  .watch-who{ font-size:12.5px; color: var(--ink-soft, #667); text-align:center; }
+  .watch-queue{ margin:0 auto; padding-left:20px; font-size:13px; color: var(--ink); max-width:520px; max-height:90px; overflow-y:auto; }
+  .watch-queue li{ margin:2px 0; }
+  .watch-queue button{ border:none; background:none; color:#B5482F; font-weight:800; cursor:pointer; }
+  #watchBtn.live{ background: var(--teal); border-color: var(--teal); color:#fff; }
   html[data-theme="black"] .new-chat-btn{ background: var(--ink); color: var(--surface); }
 
   html[data-theme^="glass"] body{
@@ -1434,10 +1447,27 @@
             </div>
             <div class="header-actions">
               <button class="pill-btn" id="callBtn" style="display:none;">📹 Call</button>
+              <button class="pill-btn" id="watchBtn" title="Watch YouTube together">📺 Watch</button>
               <button class="pill-btn" id="renameBtn">✏️ Rename</button>
               <button class="pill-btn" id="addPersonBtn">➕ Add friend</button>
               <button class="pill-btn" id="deleteChatBtn" style="display:none; color:#B5482F; border-color:#F3D3CB;">🗑️ Delete</button>
             </div>
+          </div>
+
+          <div class="watch-panel" id="watchPanel" style="display:none;">
+            <div class="watch-player"><div id="ytPlayer"></div><div class="watch-empty" id="watchEmpty">Nothing playing yet. Paste a YouTube link below.</div></div>
+            <div class="watch-now" id="watchNow"></div>
+            <div class="watch-row">
+              <input id="watchUrl" type="text" placeholder="Paste a YouTube link" maxlength="300" autocomplete="off" />
+              <button class="pill-btn" id="watchAddBtn">➕ Add</button>
+            </div>
+            <div class="watch-row">
+              <button class="pill-btn" id="watchSkipBtn">⏭ Vote skip</button>
+              <button class="pill-btn" id="watchStopBtn">⏹ Stop</button>
+              <button class="pill-btn" id="watchHideBtn">Hide</button>
+            </div>
+            <div class="watch-who" id="watchWho"></div>
+            <ol class="watch-queue" id="watchQueue"></ol>
           </div>
 
           <div class="messages" id="messagesEl"></div>
@@ -2410,6 +2440,7 @@
       startPresence();
     } else {
       stopPresence();
+      disconnectWatch();
       currentUser = null;
       activeGroupId = null;
       if(groupsUnsub) groupsUnsub();
@@ -2893,8 +2924,164 @@
     } finally { loadingOlder = false; }
   }
 
+  // =========================================================================
+  //  📺 WATCH TOGETHER: a YouTube video everyone in the chat plays at the same
+  //  time. The relay (/watch) keeps what's playing, where it's up to, the queue
+  //  and the votes to skip; nothing goes through Firebase.
+  // =========================================================================
+  const WATCH_WS = (/^(localhost|127\.0\.0\.1)$/.test(location.hostname) && localStorage.getItem("chatclub_watch_ws")) || "wss://dust-crawler-relay.onrender.com/watch"; // (tests can point it at a local relay)
+  let watchSocket = null, watchGroup = null, watchState = null, watchStateAt = 0, watchRetry = 0;
+  let ytPlayer = null, ytReady = false, ytLoading = null, ytVideo = null, ytQuietUntil = 0;
+  function youtubeId(text){
+    const t = String(text || "").trim();
+    if(/^[\w-]{11}$/.test(t)) return t;
+    const m = t.match(/(?:youtube\.com\/(?:watch\?(?:.*&)?v=|shorts\/|embed\/|live\/)|youtu\.be\/)([\w-]{11})/);
+    return m ? m[1] : null;
+  }
+  function watchSend(msg){ if(watchSocket && watchSocket.readyState === 1){ watchSocket.send(JSON.stringify(msg)); return true; } return false; }
+  function connectWatch(groupId){
+    if(watchGroup === groupId && watchSocket) return;
+    disconnectWatch();
+    if(!currentUser || !groupId) return;
+    watchGroup = groupId;
+    let ws;
+    try{ ws = new WebSocket(`${WATCH_WS}?uid=${encodeURIComponent(currentUser.uid)}&name=${encodeURIComponent(currentUser.displayName || "Friend")}&group=${encodeURIComponent(groupId)}`); } catch(e){ return; }
+    watchSocket = ws;
+    ws.onopen = () => { watchRetry = 0; };
+    ws.onmessage = (e) => {
+      let m; try{ m = JSON.parse(e.data); } catch(err){ return; }
+      if(m.t !== "watch") return;
+      const before = watchState?.now?.videoId;
+      watchState = m; watchStateAt = Date.now();
+      if(m.now && m.now.videoId !== before && $("watchPanel").style.display === "none" && m.now.by !== currentUser?.displayName){
+        showToast("📺 " + (m.now.by || "Someone"), "is playing " + m.now.title + ". Tap 📺 Watch to join in.");
+      }
+      renderWatch();
+    };
+    ws.onclose = () => {
+      if(watchSocket !== ws) return;
+      watchSocket = null;
+      if(watchGroup && currentUser) setTimeout(() => { if(watchGroup && !watchSocket){ const g = watchGroup; watchGroup = null; connectWatch(g); } }, Math.min(30000, 2000 * 2 ** watchRetry++));
+    };
+  }
+  function disconnectWatch(){
+    const ws = watchSocket; watchSocket = null; watchGroup = null; watchState = null;
+    if(ws) try{ ws.close(); } catch(e){}
+    if(ytPlayer && ytReady) try{ ytPlayer.stopVideo(); } catch(e){}
+    ytVideo = null;
+    $("watchPanel").style.display = "none";
+    renderWatch();
+  }
+  // where the shared video should be up to right now
+  function watchPos(){
+    const n = watchState?.now; if(!n) return 0;
+    return n.paused ? n.pos : n.pos + (Date.now() - watchStateAt) / 1000;
+  }
+  function loadYouTubeApi(){
+    if(ytLoading) return ytLoading;
+    ytLoading = new Promise((ok) => {
+      if(window.YT && window.YT.Player) return ok();
+      const prev = window.onYouTubeIframeAPIReady;
+      window.onYouTubeIframeAPIReady = () => { if(prev) prev(); ok(); };
+      const sc = document.createElement("script"); sc.src = "https://www.youtube.com/iframe_api"; document.head.appendChild(sc);
+    });
+    return ytLoading;
+  }
+  async function ensurePlayer(){
+    if(ytPlayer) return;
+    await loadYouTubeApi();
+    if(ytPlayer) return;
+    ytPlayer = new YT.Player("ytPlayer", {
+      width: "100%", height: "100%",
+      playerVars: { playsinline: 1, rel: 0, modestbranding: 1 },
+      events: {
+        onReady: () => { ytReady = true; syncPlayer(); },
+        onStateChange: (e) => {
+          const n = watchState?.now;
+          if(!n || Date.now() < ytQuietUntil) return; // our own change, not the person pressing anything
+          const cur = ytPlayer.getCurrentTime ? ytPlayer.getCurrentTime() : 0;
+          if(e.data === YT.PlayerState.PAUSED && !n.paused) watchSend({ t: "pause", pos: cur });
+          else if(e.data === YT.PlayerState.PLAYING && n.paused) watchSend({ t: "play", pos: cur });
+          else if(e.data === YT.PlayerState.ENDED) watchSend({ t: "ended", videoId: n.videoId });
+        },
+        onError: (e) => {
+          const n = watchState?.now;
+          if(n && (e.data === 101 || e.data === 150 || e.data === 100)){
+            showToast("📺 Can't play that one", "Its owner doesn't let it play outside YouTube. Skipping it.");
+            watchSend({ t: "broken", videoId: n.videoId });
+          }
+        }
+      }
+    });
+  }
+  function quiet(){ ytQuietUntil = Date.now() + 1200; }
+  function syncPlayer(){
+    if(!ytPlayer || !ytReady || $("watchPanel").style.display === "none") return;
+    const n = watchState?.now;
+    if(!n){ if(ytVideo){ quiet(); ytPlayer.stopVideo(); ytVideo = null; } return; }
+    const want = watchPos();
+    if(ytVideo !== n.videoId){
+      quiet(); ytVideo = n.videoId;
+      if(n.paused) ytPlayer.cueVideoById({ videoId: n.videoId, startSeconds: want });
+      else ytPlayer.loadVideoById({ videoId: n.videoId, startSeconds: want });
+      return;
+    }
+    const st = ytPlayer.getPlayerState(), cur = ytPlayer.getCurrentTime() || 0;
+    if(n.paused){
+      if(st === YT.PlayerState.PLAYING || st === YT.PlayerState.BUFFERING){ quiet(); ytPlayer.pauseVideo(); }
+      if(Math.abs(cur - want) > 1.5){ quiet(); ytPlayer.seekTo(want, true); }
+    } else {
+      if(Math.abs(cur - want) > 2.5){ quiet(); ytPlayer.seekTo(want, true); }
+      if(st !== YT.PlayerState.PLAYING && st !== YT.PlayerState.BUFFERING){ quiet(); ytPlayer.playVideo(); }
+    }
+  }
+  setInterval(syncPlayer, 2000); // keep everyone lined up
+  function renderWatch(){
+    const st = watchState, n = st?.now;
+    const btn = $("watchBtn");
+    btn.classList.toggle("live", !!n);
+    btn.textContent = n ? `📺 Watching (${st.watching.length})` : "📺 Watch";
+    $("watchEmpty").style.display = n ? "none" : "flex";
+    $("watchNow").textContent = n ? `${n.paused ? "⏸" : "▶️"} ${n.title} · added by ${n.by}` : "";
+    $("watchSkipBtn").style.display = n ? "" : "none";
+    $("watchStopBtn").style.display = n ? "" : "none";
+    $("watchSkipBtn").textContent = n ? `⏭ Vote skip (${st.votes}/${st.need})` : "⏭ Vote skip";
+    $("watchWho").textContent = st ? (watchSocket && watchSocket.readyState === 1 ? "In this chat now: " + st.watching.join(", ") : "") : (watchSocket ? "Connecting… (can take up to a minute the first time)" : "");
+    const q = $("watchQueue"); q.innerHTML = "";
+    (st?.queue || []).forEach((item, i) => {
+      const li = document.createElement("li");
+      li.textContent = `${item.title} · ${item.by} `;
+      const x = document.createElement("button"); x.textContent = "✕"; x.title = "Take it off the list";
+      x.addEventListener("click", () => watchSend({ t: "unqueue", i }));
+      li.appendChild(x); q.appendChild(li);
+    });
+    syncPlayer();
+  }
+  $("watchBtn").addEventListener("click", async () => {
+    const panel = $("watchPanel");
+    if(panel.style.display !== "none"){ panel.style.display = "none"; if(ytPlayer && ytReady){ quiet(); ytPlayer.stopVideo(); ytVideo = null; } return; }
+    panel.style.display = "flex";
+    connectWatch(activeGroupId);
+    renderWatch();
+    await ensurePlayer();
+    syncPlayer();
+  });
+  $("watchHideBtn").addEventListener("click", () => $("watchBtn").click());
+  function addWatchLink(){
+    const id = youtubeId($("watchUrl").value);
+    if(!id){ showToast("📺 Watch", "That doesn't look like a YouTube link."); return; }
+    if(!watchSend({ t: "add", videoId: id })){ showToast("📺 Watch", "Still connecting (it can take up to a minute to wake up). Try again in a moment."); return; }
+    $("watchUrl").value = "";
+  }
+  $("watchAddBtn").addEventListener("click", addWatchLink);
+  $("watchUrl").addEventListener("keydown", (e) => { if(e.key === "Enter"){ e.preventDefault(); addWatchLink(); } });
+  $("watchSkipBtn").addEventListener("click", () => watchSend({ t: "vote" }));
+  $("watchStopBtn").addEventListener("click", () => { if(confirm("Stop the video and clear the list for everyone?")) watchSend({ t: "stop" }); });
+
   function openGroup(groupId){
     stopTyping(); // leaving whatever chat we were just in
+    if(watchGroup !== groupId) disconnectWatch();
+    setTimeout(() => connectWatch(groupId), 0); // (so the 📺 button shows if something's already playing here)
     replyingTo = null;
     showReplyPreview();
     activeGroupId = groupId;

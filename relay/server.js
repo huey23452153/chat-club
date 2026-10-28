@@ -69,7 +69,68 @@ function chatConnection(ws, q) {
   ws.on('close', () => { for (const g of ws.groups) { const c = chats.get(g); if (c) c.subs.delete(ws); } });
 }
 
+// ---- Chat Club "watch together": a YouTube video everyone in a chat plays at the same time ----
+// One state per chat, kept here in memory: what's playing, where it's up to, the queue,
+// and the votes to skip. Anyone in the chat can add, pause, play or seek; a song is
+// skipped once half the people watching vote to skip it.
+const watches = new Map();                   // groupId -> { now, queue, votes, subs }
+const okVideo = (v) => typeof v === 'string' && /^[\w-]{11}$/.test(v);
+const watchOf = (id) => { let w = watches.get(id); if (!w) { w = { now: null, queue: [], votes: new Set(), subs: new Set() }; watches.set(id, w); } return w; };
+// where the video is up to, in seconds
+const posOf = (n) => n ? (n.paused ? n.pos : n.pos + (Date.now() - n.since) / 1000) : 0;
+function watchSend(w) {
+  const watching = [...w.subs].filter((c) => c.readyState === 1);
+  const names = [...new Set(watching.map((c) => c.watchName))];
+  const out = JSON.stringify({ t: 'watch', now: w.now && { ...w.now, pos: posOf(w.now) }, queue: w.queue, votes: w.votes.size, need: Math.max(1, Math.ceil(names.length / 2)), watching: names });
+  for (const c of watching) c.send(out);
+}
+async function titleOf(id) {
+  try {
+    const r = await fetch('https://www.youtube.com/oembed?format=json&url=' + encodeURIComponent('https://www.youtube.com/watch?v=' + id), { signal: AbortSignal.timeout(4000) });
+    if (r.ok) { const d = await r.json(); if (typeof d.title === 'string') return d.title.replace(/[\u0000-\u001f]/g, '').slice(0, 100); }
+  } catch (e) { /* no title then */ }
+  return 'YouTube video';
+}
+function watchNext(w) {
+  const next = w.queue.shift();
+  w.now = next ? { ...next, pos: 0, since: Date.now(), paused: false } : null;
+  w.votes.clear();
+  watchSend(w);
+}
+function watchConnection(ws, q) {
+  const uid = q.get('uid'), name = String(q.get('name') || 'Friend').replace(/[\u0000-\u001f]/g, '').slice(0, 30), g = q.get('group');
+  if (!okUid(uid) || !okGroup(g)) return ws.close(4000, 'bad');
+  ws.alive = true; ws.on('pong', () => { ws.alive = true; }); ws.watchName = name; ws.watchUid = uid;
+  const w = watchOf(g); w.subs.add(ws); watchSend(w);
+  ws.on('message', async (data) => {
+    let m; try { m = JSON.parse(String(data)); } catch (e) { return; }
+    const n = w.now, pos = Number.isFinite(m.pos) ? Math.max(0, Math.min(m.pos, 36000)) : posOf(n);
+    if (m.t === 'add' && okVideo(m.videoId)) {
+      if (w.queue.length >= 30) return;
+      const item = { videoId: m.videoId, title: await titleOf(m.videoId), by: name };
+      if (!w.now) { w.now = { ...item, pos: 0, since: Date.now(), paused: false }; w.votes.clear(); } else w.queue.push(item);
+      watchSend(w);
+    } else if (m.t === 'pause' && n) { n.pos = pos; n.paused = true; n.since = Date.now(); watchSend(w); }
+    else if (m.t === 'play' && n) { n.pos = pos; n.paused = false; n.since = Date.now(); watchSend(w); }
+    else if (m.t === 'seek' && n) { n.pos = pos; n.since = Date.now(); watchSend(w); }
+    else if (m.t === 'vote' && n) {
+      if (w.votes.has(uid)) w.votes.delete(uid); else w.votes.add(uid);
+      const people = new Set([...w.subs].filter((c) => c.readyState === 1).map((c) => c.watchUid)).size;
+      if (w.votes.size >= Math.max(1, Math.ceil(people / 2))) watchNext(w); else watchSend(w);
+    } else if (m.t === 'ended' && n && m.videoId === n.videoId && posOf(n) > 3) watchNext(w);
+    else if (m.t === 'broken' && n && m.videoId === n.videoId) watchNext(w); // can't be played inside other sites
+    else if (m.t === 'unqueue' && Number.isInteger(m.i) && w.queue[m.i]) { w.queue.splice(m.i, 1); watchSend(w); }
+    else if (m.t === 'stop') { w.now = null; w.queue = []; w.votes.clear(); watchSend(w); }
+  });
+  ws.on('close', () => {
+    w.subs.delete(ws); w.votes.delete(uid);
+    if (!w.subs.size) { watches.delete(g); return; } // nobody left watching: forget it
+    watchSend(w);
+  });
+}
+
 wss.on('connection', (ws, req) => {
+  if (new URL(req.url, 'http://x').pathname === '/watch') return watchConnection(ws, new URL(req.url, 'http://x').searchParams);
   if (new URL(req.url, 'http://x').pathname === '/chat') return chatConnection(ws, new URL(req.url, 'http://x').searchParams);
   if (new URL(req.url, 'http://x').pathname === '/presence') return presenceConnection(ws, new URL(req.url, 'http://x').searchParams);
   const q = new URL(req.url, 'http://x').searchParams, code = String(q.get('room') || '').toUpperCase(), role = q.get('role'), id = q.get('id');
