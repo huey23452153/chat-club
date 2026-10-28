@@ -2377,10 +2377,36 @@
   const presenceUnsubs = new Map(); // uid -> unsubscribe
   let presenceHeartbeat = null, presenceRefresh = null;
 
+  // WHO'S ONLINE comes from a little relay server instead of the database: while
+  // Chat Club is open it stays connected there, and the server tells it which
+  // friends are connected too. (Writing "I'm online" to Firebase every couple of
+  // minutes used up the free daily limit.) No connection = shown as offline.
+  const PRESENCE_WS = "wss://dust-crawler-relay.onrender.com/presence";
+  const relayOnline = new Set();
+  let presenceSocket = null, presenceRetry = 0, presenceRetryTimer = null, presenceWanted = [];
+  function connectPresence(){
+    if(!currentUser || presenceSocket) return;
+    let ws;
+    try{ ws = new WebSocket(PRESENCE_WS + "?uid=" + encodeURIComponent(currentUser.uid)); } catch(e){ return; }
+    presenceSocket = ws;
+    ws.onopen = () => { presenceRetry = 0; ws.send(JSON.stringify({ watch: presenceWanted })); };
+    ws.onmessage = (e) => {
+      let m; try{ m = JSON.parse(e.data); } catch(err){ return; }
+      if(m.t === "online-list"){ relayOnline.clear(); for(const u of m.online || []) relayOnline.add(u); renderPresence(); }
+      else if(m.t === "online"){ if(m.on) relayOnline.add(m.uid); else relayOnline.delete(m.uid); renderPresence(); }
+    };
+    ws.onclose = () => {
+      if(presenceSocket === ws) presenceSocket = null;
+      relayOnline.clear(); renderPresence();
+      if(!currentUser) return;
+      // try again, waiting a bit longer each time (the free server can take a minute to wake up)
+      clearTimeout(presenceRetryTimer);
+      presenceRetryTimer = setTimeout(connectPresence, Math.min(60000, 2000 * 2 ** presenceRetry++));
+    };
+  }
   function sendPresenceHeartbeat(){
-    if(!currentUser) return;
-    if(presenceHiddenSince && Date.now() - presenceHiddenSince > PRESENCE_IDLE_HIDDEN_MS) return;
-    updateDoc(doc(db, "users", currentUser.uid), { lastActive: serverTimestamp() }).catch(()=>{});
+    // (kept so the old callers still work: it just makes sure we're connected)
+    connectPresence();
   }
   // Coming back to the tab refreshes straight away rather than waiting for
   // the next (possibly throttled) tick.
@@ -2397,6 +2423,9 @@
   }
   function stopPresence(){
     clearInterval(presenceHeartbeat); clearInterval(presenceRefresh);
+    clearTimeout(presenceRetryTimer);
+    if(presenceSocket){ const ws = presenceSocket; presenceSocket = null; ws.onclose = null; try{ ws.close(); } catch(e){} }
+    relayOnline.clear();
     presenceHeartbeat = presenceRefresh = null;
     for(const unsub of presenceUnsubs.values()) unsub();
     presenceUnsubs.clear();
@@ -2458,6 +2487,8 @@
     if(!currentUser) return;
     const wanted = new Set(uids);
     wanted.delete(currentUser.uid);
+    presenceWanted = [...wanted];
+    if(presenceSocket && presenceSocket.readyState === 1) presenceSocket.send(JSON.stringify({ watch: presenceWanted }));
     for(const [uid, unsub] of presenceUnsubs){
       if(!wanted.has(uid)){ unsub(); presenceUnsubs.delete(uid); presence.delete(uid); }
     }
@@ -2480,10 +2511,7 @@
 
   function isOnline(uid){
     if(currentUser && uid === currentUser.uid) return true;
-    const p = presence.get(uid);
-    if(!p || !p.lastActive) return false;
-    const now = Date.now();
-    return (now - p.seenAt) < PRESENCE_ONLINE_MS || (now - p.lastActive) < PRESENCE_ONLINE_MS;
+    return relayOnline.has(uid);
   }
   function onlineOthersCount(g){
     return (g.memberIds || []).filter(uid => uid !== currentUser?.uid && isOnline(uid)).length;
