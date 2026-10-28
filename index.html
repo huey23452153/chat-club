@@ -1721,7 +1721,7 @@
   import {
     getFirestore, doc, setDoc, getDoc, getDocFromServer, getDocs, getDocsFromCache, collection, addDoc, updateDoc, deleteDoc,
     query, where, orderBy, limitToLast, endBefore, onSnapshot, serverTimestamp, arrayUnion, arrayRemove, deleteField, increment,
-    connectFirestoreEmulator
+    connectFirestoreEmulator, initializeFirestore, persistentLocalCache, persistentSingleTabManager
   } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
 
   const firebaseConfig = {
@@ -1735,7 +1735,11 @@
 
   const app = initializeApp(firebaseConfig);
   const auth = getAuth(app);
-  const db = getFirestore(app);
+  // (saved on this device: opening the app again, or a chat again, then only downloads what changed since,
+  // instead of every chat, friend and message all over again, which is what kept using up the free limit)
+  let db;
+  try{ db = initializeFirestore(app, { localCache: persistentLocalCache({ tabManager: persistentSingleTabManager() }) }); }
+  catch(e){ db = getFirestore(app); }
 
   // Automated tests run this app from localhost against Firebase's local
   // emulators, so real accounts/messages are never touched. Production
@@ -1893,8 +1897,8 @@
   let pendingCallGroupId = null;  // the group whose incoming-call banner is showing
   let callHeartbeatInterval = null;
   const peerConnections = new Map(); // otherUid -> RTCPeerConnection, one per other participant
-  const CALL_HEARTBEAT_MS = 8000;
-  const CALL_STALE_MS = 25000; // no heartbeat in this long = treat as gone
+  const CALL_HEARTBEAT_MS = 30000; // (everyone in the chat reads each one, so not too often)
+  const CALL_STALE_MS = 75000; // no heartbeat in this long = treat as gone
   const MAX_CALL_PARTICIPANTS = 4; // mesh calling (no media server) tops out here
   let callPipCorner = "tr"; // remembered across calls so re-shrinking lands where you left it
   let screenStream = null;  // set only while actively sharing your screen
@@ -5955,11 +5959,20 @@
     for(const [k, v] of Object.entries(data)) if(/^dustCrawler2\.\w+$/.test(k) && typeof v === "string" && v.length < 20000) out[k] = v;
     return Object.keys(out).length ? out : null;
   }
+  let dcSaveTimer = null, dcSavedJson = null;
   function saveGameControls(data){
     const clean = cleanControls(data); if(!clean || !currentUser) return false;
     dcControls = clean;
     try{ localStorage.setItem(DC_CONTROLS_KEY(), JSON.stringify(clean)); } catch(e){}
-    setDoc(doc(db, "users", currentUser.uid), { dcControls: JSON.stringify(clean) }, { merge: true }).catch(() => {});
+    // (to the account at most once a minute, and only if they really changed: every friend's app reads this
+    // person's account each time it changes)
+    const json = JSON.stringify(clean);
+    clearTimeout(dcSaveTimer);
+    dcSaveTimer = setTimeout(() => {
+      if(!currentUser || json === dcSavedJson) return;
+      dcSavedJson = json;
+      setDoc(doc(db, "users", currentUser.uid), { dcControls: json }, { merge: true }).catch(() => {});
+    }, 60000);
     return true;
   }
   // (on another device: get them from the account the first time the game is opened)
@@ -5967,7 +5980,7 @@
     if(myGameControls() || !currentUser) return;
     try{
       const snap = await getDoc(doc(db, "users", currentUser.uid));
-      const saved = snap.data()?.dcControls;
+      const saved = snap.data()?.dcControls; dcSavedJson = saved || null;
       if(saved){ dcControls = cleanControls(JSON.parse(saved)); if(dcControls) localStorage.setItem(DC_CONTROLS_KEY(), JSON.stringify(dcControls)); }
     } catch(e){}
   }
