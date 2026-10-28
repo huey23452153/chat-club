@@ -64,6 +64,9 @@
   .reset-card-actions button.allow{ background: var(--teal); border-color: var(--teal); color:#fff; }
   .reset-box{ margin-top:14px; padding-top:14px; border-top:1px solid var(--line); }
   .reset-box p{ margin:0 0 10px; font-size:14px; font-weight:700; color: var(--ink); }
+  .reset-box p.switch-mode{ font-weight:400; }
+  /* lots of cards (e.g. several forgot password requests) scroll instead of running off the screen */
+  #toastContainer{ max-height: calc(100vh - 28px); overflow-y: auto; }
   .toast{
     background: var(--surface); border: 1px solid var(--line);
     border-radius: 14px; padding: 12px 16px;
@@ -1361,10 +1364,13 @@
       <p class="switch-mode" id="forgotText"><a id="forgotLink">Forgot password?</a></p>
       <div class="reset-box" id="resetBox" style="display:none;">
         <p id="resetBoxText"></p>
-        <div class="field">
-          <input id="newPasswordInput" type="password" placeholder="New password (at least 6 characters)" autocomplete="new-password" maxlength="128" />
+        <div id="resetForm">
+          <div class="field">
+            <input id="newPasswordInput" type="password" placeholder="New password (at least 6 characters)" autocomplete="new-password" maxlength="128" />
+          </div>
+          <button class="big-btn" id="setNewPasswordBtn">Set new password</button>
         </div>
-        <button class="big-btn" id="setNewPasswordBtn">Set new password</button>
+        <p class="switch-mode" style="margin-top:8px;"><a id="cancelResetLink">Cancel</a></p>
       </div>
     </div>
   </div>
@@ -2004,16 +2010,22 @@
     }
   }
 
+  function showResetBox(text, withForm){
+    $("resetBoxText").textContent = text;
+    $("resetForm").style.display = withForm ? "" : "none";
+    $("resetBox").style.display = "block";
+  }
   // this browser's own request: wait for the admin's answer
   function watchMyResetRequest(){
     const mine = myResetRequest();
     if(!mine || myResetUnsub) return;
+    showResetBox(`Waiting for huey to say yes to a new password for ${mine.name}. Keep this open (or come back to it on this device).`, false);
     myResetUnsub = onSnapshot(doc(db, "resetRequests", mine.id), (snap) => {
       if(auth.currentUser) return; // logged in some other way meanwhile
       const status = snap.exists() ? snap.data().status : "gone";
       if(status === "allowed"){
-        $("resetBoxText").textContent = `huey said yes. Pick a new password for ${mine.name}:`;
-        $("resetBox").style.display = "block";
+        showResetBox(`huey said yes. Pick a new password for ${mine.name}:`, true);
+        if(!nameInput.value.trim()) nameInput.value = mine.name;
       } else if(status === "set"){
         forgetMyResetRequest();
         showAuthMsg("huey set a new password for you. Ask huey what it is, then log in with it.");
@@ -2023,8 +2035,9 @@
       } else if(status === "gone" && !snap.metadata.fromCache){
         forgetMyResetRequest();
       }
-    }, () => { /* can't reach it right now: the box just doesn't appear */ });
+    }, () => { /* can't reach it right now: the box keeps waiting */ });
   }
+  $("cancelResetLink").addEventListener("click", () => { forgetMyResetRequest(); clearAuthMsg(); });
 
   $("setNewPasswordBtn").addEventListener("click", async () => {
     const mine = myResetRequest();
@@ -2042,7 +2055,13 @@
       if(!res.ok || !out.ok){ showAuthMsg(out.error || "Couldn't set the password. Please try again."); return; }
       forgetMyResetRequest();
       $("newPasswordInput").value = "";
-      await signInWithEmailAndPassword(auth, nameToAuthEmail(mine.name), password);
+      nameInput.value = mine.name; passwordInput.value = password;
+      showAuthMsg("Your new password is set. Logging you in…");
+      for(let attempt = 0; attempt < 3; attempt++){
+        try{ await signInWithEmailAndPassword(auth, nameToAuthEmail(mine.name), password); return; }
+        catch(e){ await new Promise(r => setTimeout(r, 1000 * (attempt + 1))); }
+      }
+      showAuthMsg("Your new password is set! Tap Log in.");
     } catch(e){
       showAuthMsg("Couldn't set the password. Please check your connection and try again.");
     } finally {
@@ -2125,7 +2144,7 @@
       if(!typed){ showAuthMsg("Type your name (or the email you added to your account) in the box above, then tap Forgot password again."); return; }
       const told = await tellAdminIForgot(typed);
       showAuthMsg(told
-        ? "huey has been asked. Keep this page open (or come back to it on this device): as soon as huey allows it, you can pick a new password right here."
+        ? "huey has been asked. As soon as huey says yes, you can pick a new password right here, or huey might pick one and tell you."
         : "Ask huey to reset your password for you. (If you added an email to your account, type that in the name box instead to get a reset link.)");
       return;
     }
@@ -2189,6 +2208,8 @@
   });
 
   $("logoutBtn").addEventListener("click", () => signOut(auth));
+  for(const el of [nameInput, passwordInput]) el.addEventListener("keydown", (e) => { if(e.key === "Enter"){ e.preventDefault(); authSubmitBtn.click(); } });
+  $("newPasswordInput").addEventListener("keydown", (e) => { if(e.key === "Enter"){ e.preventDefault(); $("setNewPasswordBtn").click(); } });
 
   // Passkeys (api/passkey.js): the device's own face/fingerprint/PIN check unlocks a key it
   // keeps, and the server swaps a signed check for a log-in token. Loaded only when used.

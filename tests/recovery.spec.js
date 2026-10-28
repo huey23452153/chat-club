@@ -55,7 +55,10 @@ test("forgot password with no email: huey allows it, and they set a new password
   await page.fill("#nameInput", who);
   await page.click("#forgotLink");
   await expect(page.locator("#authMsg")).toContainText("huey has been asked", { timeout: 10000 });
-  await expect(page.locator("#resetBox")).toBeHidden();
+  // the box says it is waiting (even after a reload), with no password box yet
+  await page.reload();
+  await expect(page.locator("#resetBox")).toContainText("Waiting for huey", { timeout: 10000 });
+  await expect(page.locator("#resetForm")).toBeHidden();
 
   // somebody else, signed in, sees nothing of it
   const ctxOther = await browser.newContext();
@@ -69,9 +72,9 @@ test("forgot password with no email: huey allows it, and they set a new password
   await card.locator("button.allow").click();
   await expect(card).toHaveCount(0, { timeout: 10000 });
 
-  await expect(page.locator("#resetBox")).toBeVisible({ timeout: 10000 });
+  await expect(page.locator("#resetForm")).toBeVisible({ timeout: 10000 });
   await page.fill("#newPasswordInput", "brandnew456");
-  await page.click("#setNewPasswordBtn");
+  await page.press("#newPasswordInput", "Enter");
   await page.waitForSelector("#appScreen.active", { timeout: 15000 });
 
   // the new password is the real one now, and the old one isn't
