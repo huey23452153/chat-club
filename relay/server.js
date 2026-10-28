@@ -22,6 +22,7 @@ const wss = new WebSocketServer({ server, maxPayload: MAX_MSG });
 // know about ({ watch: [uids] }); this tells it which of them are connected right now, and again whenever one comes
 // or goes. Nothing is stored and nothing touches Firebase (doing this with database writes used up its free limit).
 const presence = new Map();                  // uid -> Set<socket>
+const seenStore = new Map();                 // groupId -> Map<uid, when they last saw it>
 const okUid = (s) => typeof s === 'string' && /^[A-Za-z0-9]{6,64}$/.test(s);
 const tellWatchers = (uid) => { for (const c of wss.clients) if (c.watch && c.watch.has(uid) && c.readyState === 1) c.send(JSON.stringify({ t: 'online', uid, on: presence.has(uid) })); };
 function presenceConnection(ws, q) {
@@ -31,6 +32,17 @@ function presenceConnection(ws, q) {
   if (first) tellWatchers(uid);
   ws.on('message', (data) => {
     let m; try { m = JSON.parse(String(data)); } catch (e) { return; }
+    // Chat Club "seen" and "typing…": passed straight to everyone watching this person (they pick out the chat
+    // that's open); the last "seen" per chat is kept so someone opening the chat later still sees it
+    if ((m.t === 'seen' || m.t === 'typing') && okGroup(m.g)) {
+      const out = { t: m.t, uid, g: m.g };
+      if (m.t === 'seen') { out.at = Date.now(); let g = seenStore.get(m.g); if (!g) { if (seenStore.size > 5000) seenStore.clear(); g = new Map(); seenStore.set(m.g, g); } g.set(uid, out.at); }
+      else { out.on = !!m.on; out.name = String(m.name || 'Someone').replace(/[\u0000-\u001f]/g, '').slice(0, 30); }
+      const s = JSON.stringify(out);
+      for (const c of wss.clients) if (c !== ws && c.watch && c.watch.has(uid) && c.readyState === 1) c.send(s);
+      return;
+    }
+    if (m.t === 'seen-get' && okGroup(m.g)) { const g = seenStore.get(m.g); ws.send(JSON.stringify({ t: 'seen-list', g: m.g, seen: g ? Object.fromEntries([...g].filter(([u]) => !ws.watch || ws.watch.has(u)).map(([u, at]) => [u, Date.now() - at])) : {} })); return; }
     if (!Array.isArray(m.watch)) return;
     ws.watch = new Set(m.watch.filter(okUid).slice(0, 300));
     ws.send(JSON.stringify({ t: 'online-list', online: [...ws.watch].filter((u) => presence.has(u)) }));
@@ -81,7 +93,7 @@ const posOf = (n) => n ? (n.paused ? n.pos : n.pos + (Date.now() - n.since) / 10
 function watchSend(w) {
   const watching = [...w.subs].filter((c) => c.readyState === 1);
   const names = [...new Set(watching.map((c) => c.watchName))];
-  const out = JSON.stringify({ t: 'watch', now: w.now && { ...w.now, pos: posOf(w.now) }, queue: w.queue, votes: w.votes.size, need: Math.max(1, Math.ceil(names.length / 2)), watching: names });
+  const out = JSON.stringify({ t: 'watch', now: w.now && { ...w.now, pos: posOf(w.now) }, at: Date.now(), queue: w.queue, votes: w.votes.size, need: Math.max(1, Math.ceil(names.length / 2)), watching: names });
   for (const c of watching) c.send(out);
 }
 async function titleOf(id) {
@@ -104,6 +116,8 @@ function watchConnection(ws, q) {
   const w = watchOf(g); w.subs.add(ws); watchSend(w);
   ws.on('message', async (data) => {
     let m; try { m = JSON.parse(String(data)); } catch (e) { return; }
+    // (clock check, so everyone works out the same moment of the video: see watchClock in index.html)
+    if (m.t === 'ping') return ws.send(JSON.stringify({ t: 'pong', c: m.c, s: Date.now() }));
     const n = w.now, pos = Number.isFinite(m.pos) ? Math.max(0, Math.min(m.pos, 36000)) : posOf(n);
     if (m.t === 'add' && okVideo(m.videoId)) {
       if (w.queue.length >= 30) return;
