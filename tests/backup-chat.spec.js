@@ -25,6 +25,11 @@ test("backup chat: messages still go between friends when the backup is on", asy
     return b.locator(".bubble", { hasText: text }).count();
   }, { timeout: 90000, intervals: [1000] }).toBeGreaterThan(0);
 
+  // a photo goes through the backup too
+  await a.setInputFiles("#photoInput", { name: "dot.png", mimeType: "image/png", buffer: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64") });
+  await a.click("#sendBtn");
+  await expect(b.locator("img.msg-image")).toHaveCount(1, { timeout: 20000 });
+
   // and taking it back (hold your message, then Delete) takes it away for the other person too
   const mine = a.locator(".bubble", { hasText: text }).first();
   const box = await mine.boundingBox();

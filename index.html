@@ -1294,7 +1294,7 @@
   <div class="gif-grid" id="gifGrid"></div>
   <div class="gif-credit">Powered by GIPHY</div>
 </div>
-<div class="backup-banner" id="backupBanner">⚠️ <b>Backup chat is on.</b> Chat Club's free Firebase limit ran out for today, so messages are going through the backup. They still send, but the backup only keeps them for about 12 hours, and photos can't be sent until it's back (usually by tomorrow).</div>
+<div class="backup-banner" id="backupBanner">⚠️ <b>Backup chat is on.</b> Chat Club's free Firebase limit ran out for today, so messages are going through the backup. They still send, but the backup only keeps them for about 12 hours, and only the newest few photos in each chat. Firebase is usually back by tomorrow evening.</div>
 <div class="image-viewer" id="imageViewer"><img id="imageViewerImg" alt="Photo, full size"><button id="imageViewerClose" title="Close">✕</button></div>
 <div class="call-overlay" id="callOverlay">
   <div class="call-pip-bar" id="callPipBar">
@@ -2888,7 +2888,8 @@
   setInterval(checkFirebase, 5 * 60000); // (each check can count as one read, so not too often)
   function backupToMessage(b){
     const t = { toDate: () => new Date(b.at), toMillis: () => b.at };
-    return { id: b.id, text: b.text || "", gifUrl: b.gifUrl, senderId: b.senderId, senderName: b.senderName, createdAt: t };
+    // (the backup only keeps the newest few photos in each chat)
+    return { id: b.id, text: b.text || (b.photoGone ? "📷 (photo no longer kept)" : ""), gifUrl: b.gifUrl, imageData: b.imageData, senderId: b.senderId, senderName: b.senderName, createdAt: t };
   }
   function showBackupChat(groupId){
     if(groupId !== activeGroupId) return;
@@ -2909,7 +2910,7 @@
       else if(m.t === "msg" && m.msg){
         const list = backupMsgs.get(m.msg.groupId) || []; list.push(m.msg); backupMsgs.set(m.msg.groupId, list);
         showBackupChat(m.msg.groupId);
-        if(m.msg.senderId !== currentUser.uid) notifyNewMessage(m.msg.senderName || "Someone", m.msg.text || "sent a GIF");
+        if(m.msg.senderId !== currentUser.uid) notifyNewMessage(m.msg.senderName || "Someone", m.msg.text || (m.msg.imageData ? "sent a photo" : "sent a GIF"));
       }
     };
     ws.onclose = () => {
@@ -2925,9 +2926,9 @@
   }
   // (phones: putting the cursor back in the typing box pops the keyboard up, so only on computers)
   const backToTyping = () => { if(!matchMedia("(pointer: coarse)").matches) messageInput.focus(); };
-  function sendBackup(text, gifUrl){
+  function sendBackup(text, gifUrl, imageData){
     if(!backupSocket || backupSocket.readyState !== 1){ showToast("Chat Club", "The backup chat is still connecting (it can take up to a minute to wake up). Try again in a moment."); return false; }
-    backupSocket.send(JSON.stringify({ t: "msg", groupId: activeGroupId, text, gifUrl }));
+    backupSocket.send(JSON.stringify({ t: "msg", groupId: activeGroupId, text, gifUrl, imageData }));
     return true;
   }
 
@@ -4269,8 +4270,7 @@
     showReplyPreview();
 
     if(backupMode){
-      if(imageDataUrl) showToast("Chat Club", "Photos can't be sent while the backup chat is on. GIFs and text still work.");
-      if(text || gifUrl) sendBackup(text ? applyWordSwaps(text.slice(0, 500)) : "", gifUrl);
+      if(text || gifUrl || imageDataUrl) sendBackup(text ? applyWordSwaps(text.slice(0, 500)) : "", gifUrl, imageDataUrl || undefined);
       return;
     }
     try{
@@ -4293,7 +4293,7 @@
       await updateDoc(doc(db, "groups", activeGroupId), unreadBump(activeGroupId));
     } catch(err){
       // the free limit ran out: switch to the backup chat and send it there instead
-      if(isQuotaError(err)){ enterBackupMode(); if(text || gifUrl) setTimeout(() => sendBackup(text ? applyWordSwaps(text.slice(0, 500)) : "", gifUrl), 2500); return; }
+      if(isQuotaError(err)){ enterBackupMode(); if(text || gifUrl || imageDataUrl) setTimeout(() => sendBackup(text ? applyWordSwaps(text.slice(0, 500)) : "", gifUrl, imageDataUrl || undefined), 2500); return; }
       composerHint.textContent = "Message didn't send — please try again.";
       composerHint.classList.add("show");
       setTimeout(() => {
