@@ -1706,7 +1706,7 @@
     sendPasswordResetEmail, verifyBeforeUpdateEmail, signInWithCustomToken
   } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-auth.js";
   import {
-    getFirestore, doc, setDoc, getDoc, getDocs, collection, addDoc, updateDoc, deleteDoc,
+    getFirestore, doc, setDoc, getDoc, getDocFromServer, getDocs, collection, addDoc, updateDoc, deleteDoc,
     query, where, orderBy, limitToLast, endBefore, onSnapshot, serverTimestamp, arrayUnion, arrayRemove, deleteField, increment,
     connectFirestoreEmulator
   } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
@@ -2117,12 +2117,13 @@
       if(myResetUnsub){ myResetUnsub(); myResetUnsub = null; }
       tellAdminIForgot(mine.name, true).catch(() => {});
     };
-    const noAnswer = setTimeout(giveUp, 10000);
+    // (Firebase can run out of reads but still take writes, so check that reading really works)
+    Promise.race([getDocFromServer(doc(db, "resetRequests", mine.id)), new Promise((_, no) => setTimeout(() => no(new Error("timeout")), 8000))])
+      .then(() => { heard = true; }, giveUp);
     myResetUnsub = onSnapshot(doc(db, "resetRequests", mine.id), (snap) => {
-      if(!snap.metadata.fromCache){ heard = true; clearTimeout(noAnswer); }
       const status = snap.exists() ? snap.data().status : "gone";
       myResetStatus(mine, status, !snap.metadata.fromCache);
-    }, (err) => { clearTimeout(noAnswer); if(isQuotaError(err)) giveUp(); });
+    }, (err) => { if(isQuotaError(err)) giveUp(); });
   }
   function myResetStatus(mine, status, sure){
     if(auth.currentUser) return; // logged in some other way meanwhile
