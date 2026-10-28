@@ -2731,11 +2731,17 @@
     const mq = query(collection(db, "groups", groupId, "messages"), orderBy("createdAt", "asc"));
     let seenMessageIds = new Set();
     let firstMessagesLoad = true;
+    // Only messages sent after you opened this chat can ping you. (The chat can
+    // load in two goes, part from the saved copy and then the rest from the
+    // internet, and the second lot used to look "new" and set off a pile of
+    // notifications for old messages.)
+    const openedAt = Date.now() - 60000;      // (a minute of leeway in case this computer's clock is a bit off)
     messagesUnsub = onSnapshot(mq, (snap) => {
       const msgs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       if(!firstMessagesLoad){
         msgs.forEach(m => {
-          if(!seenMessageIds.has(m.id) && m.senderId !== currentUser.uid){
+          const sentAt = m.createdAt?.toMillis ? m.createdAt.toMillis() : Date.now();
+          if(!seenMessageIds.has(m.id) && m.senderId !== currentUser.uid && sentAt >= openedAt){
             notifyNewMessage(m.senderName || "Someone", m.text);
           }
         });
