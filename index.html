@@ -466,6 +466,7 @@
   /* backup chat banner (when Firebase's free limit runs out) */
   .backup-banner{ position:fixed; top:8px; left:50%; transform:translateX(-50%); z-index:350; width:min(560px, calc(100vw - 24px)); display:none; padding:8px 12px; border-radius:12px; background:#fff3cd; color:#5c4400; border:1px solid #f0d68a; font-size:13px; line-height:1.4; box-shadow:0 6px 18px -8px rgba(0,0,0,.35); }
   .backup-banner.show{ display:block; }
+  .load-older-btn{ display:block; margin:6px auto 12px; padding:6px 14px; border-radius:999px; border:1px solid var(--line); background:var(--surface); color:var(--ink); font:inherit; font-size:13px; cursor:pointer; }
   /* GIF search */
   .gif-panel{ position:fixed; left:50%; bottom:84px; transform:translateX(-50%); width:min(420px, calc(100vw - 24px)); height:min(440px, 60vh); z-index:300; display:none; flex-direction:column; gap:8px; padding:10px; background:var(--surface); border:1px solid var(--line); border-radius:16px; box-shadow:0 12px 30px -8px rgba(0,0,0,.35); }
   .gif-panel.show{ display:flex; }
@@ -1651,7 +1652,7 @@
   } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-auth.js";
   import {
     getFirestore, doc, setDoc, getDoc, getDocs, collection, addDoc, updateDoc, deleteDoc,
-    query, where, orderBy, limitToLast, onSnapshot, serverTimestamp, arrayUnion, arrayRemove, deleteField, increment,
+    query, where, orderBy, limitToLast, endBefore, onSnapshot, serverTimestamp, arrayUnion, arrayRemove, deleteField, increment,
     connectFirestoreEmulator
   } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
 
@@ -2809,6 +2810,28 @@
   // =========================================================================
   //  OPEN / RENDER A GROUP
   // =========================================================================
+  const MESSAGES_PAGE = 80;
+  let olderMessages = [], noOlderMessages = false, loadingOlder = false;
+  async function loadOlderMessages(){
+    if(loadingOlder || !activeGroupId || !lastRenderedMessages.length) return;
+    const oldest = lastRenderedMessages[0];
+    if(!oldest.createdAt) return;
+    loadingOlder = true;
+    const groupId = activeGroupId, el = $("messagesEl"), fromBottom = el.scrollHeight - el.scrollTop;
+    try{
+      const snap = await getDocs(query(collection(db, "groups", groupId, "messages"), orderBy("createdAt", "asc"), endBefore(oldest.createdAt), limitToLast(MESSAGES_PAGE)));
+      if(groupId !== activeGroupId) return;
+      const got = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      if(got.length < MESSAGES_PAGE) noOlderMessages = true;
+      olderMessages = got.concat(olderMessages);
+      lastRenderedMessages = got.concat(lastRenderedMessages);
+      renderMessages(lastRenderedMessages);
+      el.scrollTop = el.scrollHeight - fromBottom; // stay looking at the same message
+    } catch(e){
+      showToast("Chat Club", isQuotaError(e) ? "Can't load older messages right now (the free Firebase limit ran out for today)." : "Couldn't load older messages. Try again.");
+    } finally { loadingOlder = false; }
+  }
+
   function openGroup(groupId){
     stopTyping(); // leaving whatever chat we were just in
     replyingTo = null;
@@ -2835,7 +2858,8 @@
     if(messagesUnsub) messagesUnsub();
     // only the newest 80 messages: loading a whole chat's history every time it opened used up
     // the free Firebase reads for the day (each message counts as one read)
-    const mq = query(collection(db, "groups", groupId, "messages"), orderBy("createdAt", "asc"), limitToLast(80));
+    olderMessages = []; noOlderMessages = false;
+    const mq = query(collection(db, "groups", groupId, "messages"), orderBy("createdAt", "asc"), limitToLast(MESSAGES_PAGE));
     let seenMessageIds = new Set();
     let firstMessagesLoad = true;
     // Only messages sent after you opened this chat can ping you. (The chat can
@@ -2855,8 +2879,8 @@
       }
       firstMessagesLoad = false;
       seenMessageIds = new Set(msgs.map(m => m.id));
-      lastRenderedMessages = msgs;
-      renderMessages(msgs);
+      lastRenderedMessages = olderMessages.concat(msgs);
+      renderMessages(lastRenderedMessages);
       markGroupRead(groupId);
     }, (err) => { if(isQuotaError(err)) enterBackupMode(); });
 
@@ -3049,6 +3073,14 @@
     const el = $("messagesEl");
     const wasNearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 60;
     el.innerHTML = "";
+    // (chats only load their newest messages, to stay inside the free Firebase
+    // limit; older ones are still saved and come in 80 at a time from here)
+    if(!backupMode && msgs.length >= MESSAGES_PAGE && !noOlderMessages){
+      const more = document.createElement("button");
+      more.className = "load-older-btn"; more.textContent = "⬆️ Load older messages";
+      more.addEventListener("click", loadOlderMessages);
+      el.appendChild(more);
+    }
     msgs.forEach(m => {
       const row = document.createElement("div");
       const mine = m.senderId === currentUser.uid;
