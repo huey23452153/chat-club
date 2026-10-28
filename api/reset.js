@@ -137,7 +137,9 @@ module.exports = async (req, res) => {
     // huey's way: leave the request marked "set" so the asking browser can say so (tidied away later)
     if (byAdmin) await ref.update({ status: 'set' }); else await ref.delete();
     // (an account that logs in with an email it added can't log in by name: tell them, not which email)
-    return send(200, { ok: true, useEmail: !String(user.email || '').endsWith('@' + NAME_AUTH_DOMAIN) });
+    // (and an account renamed since it was made still logs in with its first name: say which)
+    const madeUp = String(user.email || '').endsWith('@' + NAME_AUTH_DOMAIN);
+    return send(200, { ok: true, useEmail: !madeUp, loginName: madeUp ? user.email.slice(0, -NAME_AUTH_DOMAIN.length - 1) : undefined });
   } catch (e) {
     return send(500, { error: 'Something went wrong. Please try again.' });
   }

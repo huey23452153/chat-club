@@ -2168,10 +2168,11 @@
       forgetMyResetRequest();
       $("newPasswordInput").value = "";
       if(out.useEmail){ nameInput.value = ""; passwordInput.value = password; showAuthMsg("Your new password is set! Your account logs in with the email you added to it: type that email above, then tap Log in."); return; }
-      nameInput.value = mine.name; passwordInput.value = password;
+      const loginName = typeof out.loginName === "string" && out.loginName ? out.loginName : mine.name;
+      nameInput.value = loginName; passwordInput.value = password;
       showAuthMsg("Your new password is set. Logging you in…");
       for(let attempt = 0; attempt < 3; attempt++){
-        try{ await signInWithEmailAndPassword(auth, nameToAuthEmail(mine.name), password); return; }
+        try{ await signInWithEmailAndPassword(auth, nameToAuthEmail(loginName), password); return; }
         catch(e){ await new Promise(r => setTimeout(r, 1000 * (attempt + 1))); }
       }
       showAuthMsg("Your new password is set! Tap Log in.");
@@ -2216,7 +2217,7 @@
             body: JSON.stringify({ id: r.id, password, relay: true, adminToken: await auth.currentUser.getIdToken() }) });
           const out = await res.json().catch(() => ({}));
           if(!res.ok || !out.ok) showToast("Couldn't set it", out.error || "Please try again.");
-          else showToast("Password set", `Tell ${who} their new password.`);
+          else showToast("Password set", `Tell ${who} their new password.` + (out.loginName && out.loginName !== who.toLowerCase().replace(/[^a-z0-9]/g, "") ? ` They log in with the name "${out.loginName}".` : out.useEmail ? " They log in with their email." : ""));
         } catch(e){ showToast("Couldn't set it", "Please check your connection."); }
       });
       $("toastContainer").appendChild(el);
@@ -2285,7 +2286,7 @@
               });
               const out = await res.json().catch(() => ({}));
               if(!res.ok || !out.ok) showToast("Couldn't set it", out.error || "Please try again.");
-              else showToast("Password set", `Tell ${who} their new password.`);
+              else showToast("Password set", `Tell ${who} their new password.` + (out.loginName && out.loginName !== who.toLowerCase().replace(/[^a-z0-9]/g, "") ? ` They log in with the name "${out.loginName}".` : out.useEmail ? " They log in with their email." : ""));
             } catch(e){ showToast("Couldn't set it", "Please check your connection."); }
           });
           el.querySelector(".deny").addEventListener("click", () => {
