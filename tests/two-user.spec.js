@@ -233,15 +233,28 @@ test("an owner can remove a member from the group", async ({ browser }) => {
 
   await expect(pageA.locator("#chatMemberCount")).toHaveText(/^2 people/);
 
-  pageA.on("dialog", (dialog) => dialog.accept());
   await pageA.click("#addPersonBtn");
-  await pageA.click(`.member-chip-remove[title="Remove ${nameB}"]`);
+  // tap ✕, then "Ban?" to be sure (no pop-up box)
+  const remove = pageA.locator(`.member-chip-remove[title="Remove and ban ${nameB}"]`);
+  await remove.click();
+  await expect(remove).toHaveText("Ban?");
+  await remove.click();
 
   // Check the toast first — it auto-dismisses after a few seconds, so it
   // has to be checked before the other, slower-to-settle assertions below.
   await expect(pageB.locator(".toast-name", { hasText: "Removed from chat" })).toBeVisible({ timeout: 10000 });
   await expect(pageA.locator("#chatMemberCount")).toHaveText("1 people", { timeout: 10000 });
   await expect(pageB.locator(".chat-item-name", { hasText: "Remove Test Chat" })).toHaveCount(0, { timeout: 10000 });
+
+  // banned: they can't be invited back...
+  await pageA.fill("#addPersonName", nameB);
+  await pageA.click("#confirmAddPersonBtn");
+  await expect(pageA.locator("#addPersonMsg")).toContainText("banned", { timeout: 10000 });
+  // ...until the owner unbans them
+  await pageA.locator(".member-chip.banned button", { hasText: "unban" }).click();
+  await expect(pageA.locator(".member-chip.banned")).toHaveCount(0, { timeout: 10000 });
+  await pageA.click("#confirmAddPersonBtn");
+  await expect(pageA.locator("#addPersonMsg")).toContainText("Invite sent", { timeout: 10000 });
 
   await ctxA.close();
   await ctxB.close();

@@ -32,8 +32,14 @@ service cloud.firestore {
     match /groups/{groupId} {
       allow read: if isSignedIn() &&
         (request.auth.uid in resource.data.memberIds || request.auth.uid in resource.data.pendingIds);
+      // members can update the chat, but nobody banned can be put back in, and only
+      // the owner or huey can change who's banned
       allow update: if isSignedIn() &&
-        (request.auth.uid in resource.data.memberIds || request.auth.uid in resource.data.pendingIds);
+        (request.auth.uid in resource.data.memberIds || request.auth.uid in resource.data.pendingIds) &&
+        !request.resource.data.get('memberIds', []).hasAny(request.resource.data.get('bannedIds', [])) &&
+        !request.resource.data.get('pendingIds', []).hasAny(request.resource.data.get('bannedIds', [])) &&
+        (request.resource.data.get('bannedIds', []) == resource.data.get('bannedIds', []) ||
+          resource.data.ownerId == request.auth.uid || request.auth.token.email == "huey@chatclub.local");
       allow create: if isSignedIn() && request.auth.uid in request.resource.data.memberIds;
       allow delete: if isSignedIn() && resource.data.ownerId == request.auth.uid;
 

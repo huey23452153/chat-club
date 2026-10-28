@@ -664,6 +664,8 @@
     border:2px solid var(--surface); box-shadow:none;
   }
   .online-text{ color:#1F9D57; font-weight:700; }
+  .member-chip-remove.armed{ background:#e5484d; color:#fff; border-radius:8px; padding:0 6px; font-size:11px; }
+  .member-chip.banned{ opacity:.75; }
   .member-chip-remove{
     background:none; border:none; color: var(--ink-soft); font-size:13px;
     line-height:1; padding:0; margin:0 -2px 0 1px; border-radius:50%;
@@ -3485,7 +3487,7 @@
     const wrap = $("currentMembersList");
     wrap.innerHTML = "";
     if(!g) return;
-    const isOwner = g.ownerId === currentUser.uid;
+    const isOwner = g.ownerId === currentUser.uid, canBan = isOwner || isAdmin();
     Object.entries(g.memberNames || {}).forEach(([uid, name]) => {
       const chip = document.createElement("span");
       chip.className = "member-chip";
@@ -3497,17 +3499,38 @@
       const nameSpan = document.createElement("span");
       nameSpan.textContent = name;
       chip.appendChild(nameSpan);
-      // Owners can remove anyone but themselves; leaving the group entirely
-      // isn't supported yet, so we don't offer to remove your own chip.
-      if(isOwner && uid !== currentUser.uid){
+      // The owner (and huey, in any chat he's in) can remove and ban anyone but
+      // themselves: tap ✕, then "Ban?" to be sure. A banned person can't be
+      // invited back until they're unbanned.
+      if(canBan && uid !== currentUser.uid){
         const removeBtn = document.createElement("button");
         removeBtn.className = "member-chip-remove";
-        removeBtn.title = `Remove ${name}`;
+        removeBtn.title = `Remove and ban ${name}`;
         removeBtn.textContent = "✕";
-        removeBtn.addEventListener("click", () => removeMember(uid, name));
+        removeBtn.addEventListener("click", () => {
+          if(!removeBtn.dataset.armed){
+            removeBtn.dataset.armed = "1"; removeBtn.textContent = "Ban?"; removeBtn.classList.add("armed");
+            setTimeout(() => { if(removeBtn.isConnected){ delete removeBtn.dataset.armed; removeBtn.textContent = "✕"; removeBtn.classList.remove("armed"); } }, 3000);
+            return;
+          }
+          removeMember(uid, name);
+        });
         chip.appendChild(removeBtn);
       }
       wrap.appendChild(chip);
+    });
+    // banned people (the owner and huey can unban them)
+    Object.entries(g.bannedNames || {}).forEach(([uid, name]) => {
+      if(!(g.bannedIds || []).includes(uid) || !canBan) return;
+      const chip = document.createElement("span");
+      chip.className = "member-chip banned";
+      chip.textContent = "🚫 " + name + " ";
+      const un = document.createElement("button");
+      un.className = "member-chip-remove"; un.textContent = "unban"; un.title = `Let ${name} be invited again`;
+      un.addEventListener("click", async () => {
+        try{ await updateDoc(doc(db, "groups", activeGroupId), { bannedIds: arrayRemove(uid), [`bannedNames.${uid}`]: deleteField() }); chip.remove(); } catch(e){ showToast("Chat Club", "Couldn't unban them. Try again."); }
+      });
+      chip.appendChild(un); wrap.appendChild(chip);
     });
     Object.entries(g.pendingNames || {}).forEach(([uid, name]) => {
       if(!(g.pendingIds || []).includes(uid)) return; // already responded
@@ -3519,17 +3542,19 @@
   }
 
   async function removeMember(uid, name){
-    const sure = confirm(`Remove ${name} from this chat?`);
-    if(!sure) return;
     try{
       await updateDoc(doc(db, "groups", activeGroupId), {
         memberIds: arrayRemove(uid),
+        pendingIds: arrayRemove(uid),
         [`memberNames.${uid}`]: deleteField(),
+        bannedIds: arrayUnion(uid),
+        [`bannedNames.${uid}`]: name,
         updatedAt: serverTimestamp()
       });
       renderCurrentMembers();
+      showToast("Chat Club", `${name} was removed and banned from this chat.`);
     } catch(err){
-      alert("Couldn't remove that person. Please try again.");
+      showToast("Chat Club", "Couldn't remove that person. Please try again.");
     }
   }
 
@@ -3550,6 +3575,11 @@
       const g = myGroups.find(g => g.id === activeGroupId);
       if(g && (g.memberIds || []).includes(userDoc.id)){
         msgEl.textContent = "That person is already in this chat.";
+        msgEl.classList.add("show");
+        return;
+      }
+      if(g && (g.bannedIds || []).includes(userDoc.id)){
+        msgEl.textContent = "That person is banned from this chat. The owner (or huey) can unban them in the members list.";
         msgEl.classList.add("show");
         return;
       }
