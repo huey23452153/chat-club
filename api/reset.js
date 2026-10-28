@@ -116,15 +116,28 @@ module.exports = async (req, res) => {
     let user;
     try {
       user = await lib.auth().getUserByEmail(email);
-    } catch (e) {
-      await ref.delete();
+    } catch (e) { user = null; }
+    if (!user) {
+      // not found by the made-up address (e.g. they added a real email, which replaces it): look for the
+      // account whose name is the one they typed
+      const want = String(data.name || '').trim().toLowerCase(), slug = want.replace(/[^a-z0-9]/g, '');
+      let page;
+      do {
+        page = await lib.auth().listUsers(1000, page && page.pageToken);
+        const found = page.users.filter((u) => u.displayName && (u.displayName.trim().toLowerCase() === want || u.displayName.toLowerCase().replace(/[^a-z0-9]/g, '') === slug));
+        if (found.length === 1) user = found[0];
+      } while (!user && page.pageToken);
+      if (user && user.email === ADMIN_AUTH_EMAIL) user = null;
+    }
+    if (!user) {
       return send(400, { error: 'There is no account with that name (or it logs in with an email: use that to reset it).' });
     }
     await lib.auth().updateUser(user.uid, { password });
     await lib.auth().revokeRefreshTokens(user.uid); // signs out anywhere the old password was in use
     // huey's way: leave the request marked "set" so the asking browser can say so (tidied away later)
     if (byAdmin) await ref.update({ status: 'set' }); else await ref.delete();
-    return send(200, { ok: true });
+    // (an account that logs in with an email it added can't log in by name: tell them, not which email)
+    return send(200, { ok: true, useEmail: !String(user.email || '').endsWith('@' + NAME_AUTH_DOMAIN) });
   } catch (e) {
     return send(500, { error: 'Something went wrong. Please try again.' });
   }
