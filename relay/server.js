@@ -38,7 +38,39 @@ function presenceConnection(ws, q) {
   ws.on('close', () => { const set = presence.get(uid); if (!set) return; set.delete(ws); if (!set.size) { presence.delete(uid); tellWatchers(uid); } });
 }
 
+// CHAT CLUB BACKUP CHAT: when Chat Club's Firebase runs out of its free daily limit, the app switches here. Each
+// chat (by its id) keeps its last 200 messages for 12 hours in memory (gone if the server restarts), and new
+// messages go straight to everyone in that chat who's connected. Text and GIPHY GIFs only (no photos).
+const chats = new Map();                     // groupId -> { msgs: [], subs: Set<socket> }
+const okGroup = (s) => typeof s === 'string' && /^[A-Za-z0-9]{10,64}$/.test(s);
+const okGif = (u) => typeof u === 'string' && u.length < 300 && /^https:\/\/media\d*\.giphy\.com\/media\/(?:[\w.-]+\/)?[\w-]+\/[\w.-]+\.gif(\?[\w=&.-]*)?$/.test(u);
+const KEEP_MS = 12 * 3600 * 1000, KEEP_N = 200;
+const chatOf = (id) => { let c = chats.get(id); if (!c) { c = { msgs: [], subs: new Set() }; chats.set(id, c); } return c; };
+function chatConnection(ws, q) {
+  const uid = q.get('uid'), name = String(q.get('name') || 'Friend').replace(/[\u0000-\u001f]/g, '').slice(0, 30);
+  if (!okUid(uid)) return ws.close(4000, 'bad');
+  ws.alive = true; ws.on('pong', () => { ws.alive = true; }); ws.groups = new Set();
+  ws.on('message', (data) => {
+    let m; try { m = JSON.parse(String(data)); } catch (e) { return; }
+    if (m.t === 'join' && Array.isArray(m.groups)) {
+      for (const g of m.groups.filter(okGroup).slice(0, 100)) {
+        if (ws.groups.has(g)) continue; ws.groups.add(g); const c = chatOf(g); c.subs.add(ws);
+        const now = Date.now(); c.msgs = c.msgs.filter((x) => now - x.at < KEEP_MS);
+        ws.send(JSON.stringify({ t: 'history', groupId: g, msgs: c.msgs }));
+      }
+    } else if (m.t === 'msg' && ws.groups.has(m.groupId)) {
+      const text = typeof m.text === 'string' ? m.text.slice(0, 500) : '', gifUrl = okGif(m.gifUrl) ? m.gifUrl : undefined;
+      if (!text && !gifUrl) return;
+      const msg = { id: 'b' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8), groupId: m.groupId, senderId: uid, senderName: name, text, gifUrl, at: Date.now() };
+      const c = chatOf(m.groupId); c.msgs.push(msg); if (c.msgs.length > KEEP_N) c.msgs.splice(0, c.msgs.length - KEEP_N);
+      const out = JSON.stringify({ t: 'msg', msg }); for (const sub of c.subs) if (sub.readyState === 1) sub.send(out);
+    }
+  });
+  ws.on('close', () => { for (const g of ws.groups) { const c = chats.get(g); if (c) c.subs.delete(ws); } });
+}
+
 wss.on('connection', (ws, req) => {
+  if (new URL(req.url, 'http://x').pathname === '/chat') return chatConnection(ws, new URL(req.url, 'http://x').searchParams);
   if (new URL(req.url, 'http://x').pathname === '/presence') return presenceConnection(ws, new URL(req.url, 'http://x').searchParams);
   const q = new URL(req.url, 'http://x').searchParams, code = String(q.get('room') || '').toUpperCase(), role = q.get('role'), id = q.get('id');
   if (!ok(code) || !okId(id) || (role !== 'host' && role !== 'join')) return ws.close(4000, 'bad');
