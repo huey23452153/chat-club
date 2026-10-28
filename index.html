@@ -288,6 +288,15 @@
   }
   .member-count{ font-size:12.5px; color: var(--ink-soft); }
   .header-actions{ display:flex; gap:8px; }
+  /* (small screens: the chat name keeps some room, and the buttons slide sideways instead of covering it) */
+  @media (max-width: 780px){
+    .chat-header{ gap:8px; }
+    .chat-header-left{ min-width:110px; flex-shrink:1; overflow:hidden; }
+    .chat-header-left .group-name, .chat-header-left .member-count{ white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .header-actions{ min-width:0; flex-shrink:1; overflow-x:auto; scrollbar-width:none; }
+    .header-actions::-webkit-scrollbar{ display:none; }
+    .header-actions > *{ flex-shrink:0; }
+  }
   .pill-btn{
     background: var(--bg); border: 1.5px solid var(--line);
     border-radius: 999px; padding: 7px 13px; font-weight:700; font-size:13px;
@@ -468,7 +477,11 @@
   .bubble img.msg-image + .msg-text{ margin-top:6px; }
   /* backup chat banner (when Firebase's free limit runs out) */
   .backup-banner{ position:fixed; top:8px; left:50%; transform:translateX(-50%); z-index:350; width:min(560px, calc(100vw - 24px)); display:none; padding:8px 12px; border-radius:12px; background:#fff3cd; color:#5c4400; border:1px solid #f0d68a; font-size:13px; line-height:1.4; box-shadow:0 6px 18px -8px rgba(0,0,0,.35); }
-  .backup-banner.show{ display:block; }
+  .backup-banner.show{ display:block; cursor:pointer; }
+  /* (shrunk to a little chip so it doesn't cover the buttons at the top; tap it to read it again) */
+  .backup-banner.small{ top:auto; bottom:calc(92px + env(safe-area-inset-bottom)); left:auto; right:10px; transform:none; width:auto; padding:5px 10px; border-radius:999px; font-weight:700; }
+  .backup-banner .bb-full{ display:inline; } .backup-banner .bb-chip{ display:none; }
+  .backup-banner.small .bb-full{ display:none; } .backup-banner.small .bb-chip{ display:inline; }
   .load-older-btn{ display:block; margin:6px auto 12px; padding:6px 14px; border-radius:999px; border:1px solid var(--line); background:var(--surface); color:var(--ink); font:inherit; font-size:13px; cursor:pointer; }
   /* GIF search */
   .gif-panel{ position:fixed; left:50%; bottom:84px; transform:translateX(-50%); width:min(420px, calc(100vw - 24px)); height:min(440px, 60vh); z-index:300; display:none; flex-direction:column; gap:8px; padding:10px; background:var(--surface); border:1px solid var(--line); border-radius:16px; box-shadow:0 12px 30px -8px rgba(0,0,0,.35); }
@@ -1294,7 +1307,7 @@
   <div class="gif-grid" id="gifGrid"></div>
   <div class="gif-credit">Powered by GIPHY</div>
 </div>
-<div class="backup-banner" id="backupBanner">⚠️ <b>Backup chat is on.</b> Chat Club's free Firebase limit ran out for today, so messages are going through the backup. They still send, but the backup only keeps them for about 12 hours, and only the newest few photos in each chat. Firebase is usually back by tomorrow evening.</div>
+<div class="backup-banner" id="backupBanner" title="Tap to show or hide">⚠️ <span class="bb-full"><b>Backup chat is on.</b> Chat Club's free Firebase limit ran out for today, so messages are going through the backup. They still send, but the backup only keeps them for about 12 hours, and only the newest few photos in each chat. Firebase is usually back by tomorrow evening. <i>(tap to make this small)</i></span><span class="bb-chip">Backup chat</span></div>
 <div class="image-viewer" id="imageViewer"><img id="imageViewerImg" alt="Photo, full size"><button id="imageViewerClose" title="Close">✕</button></div>
 <div class="call-overlay" id="callOverlay">
   <div class="call-pip-bar" id="callPipBar">
@@ -2872,6 +2885,7 @@
     if(!myGroups.length){ try{ myGroups = JSON.parse(localStorage.getItem(groupsCacheKey()) || "[]"); } catch(e){ myGroups = []; } }
     renderGroupList();
     $("backupBanner").classList.add("show");
+    setTimeout(() => $("backupBanner").classList.add("small"), 8000);
     connectBackup();
     if(activeGroupId) showBackupChat(activeGroupId);
   }
@@ -2886,6 +2900,7 @@
     if(await firebaseReadsOut()) enterBackupMode();
   }
   setInterval(checkFirebase, 5 * 60000); // (each check can count as one read, so not too often)
+  $("backupBanner").addEventListener("click", () => $("backupBanner").classList.toggle("small"));
   function backupToMessage(b){
     const t = { toDate: () => new Date(b.at), toMillis: () => b.at };
     // (the backup only keeps the newest few photos in each chat)
