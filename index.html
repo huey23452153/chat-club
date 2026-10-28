@@ -1719,7 +1719,7 @@
     sendPasswordResetEmail, verifyBeforeUpdateEmail, signInWithCustomToken
   } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-auth.js";
   import {
-    getFirestore, doc, setDoc, getDoc, getDocFromServer, getDocs, collection, addDoc, updateDoc, deleteDoc,
+    getFirestore, doc, setDoc, getDoc, getDocFromServer, getDocs, getDocsFromCache, collection, addDoc, updateDoc, deleteDoc,
     query, where, orderBy, limitToLast, endBefore, onSnapshot, serverTimestamp, arrayUnion, arrayRemove, deleteField, increment,
     connectFirestoreEmulator
   } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
@@ -3111,16 +3111,26 @@
     loadingOlder = true;
     const groupId = activeGroupId, el = $("messagesEl"), fromBottom = el.scrollHeight - el.scrollTop;
     try{
-      const snap = await getDocs(query(collection(db, "groups", groupId, "messages"), orderBy("createdAt", "asc"), endBefore(oldest.createdAt), limitToLast(MESSAGES_PAGE)));
+      const q = query(collection(db, "groups", groupId, "messages"), orderBy("createdAt", "asc"), endBefore(oldest.createdAt), limitToLast(MESSAGES_PAGE));
+      // (when Firebase has run out for the day it doesn't answer at all, it just keeps retrying: so give up
+      // after a few seconds and show whatever older ones this device already has saved)
+      let snap = null, fromCache = false;
+      try{ snap = await Promise.race([getDocs(q), new Promise((_, no) => setTimeout(() => no(new Error("timeout")), 8000))]); }
+      catch(e){
+        snap = await getDocsFromCache(q).catch(() => null); fromCache = true;
+        if(!snap || !snap.docs.length) throw e;
+      }
       if(groupId !== activeGroupId) return;
       const got = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      if(got.length < MESSAGES_PAGE) noOlderMessages = true;
+      if(got.length < MESSAGES_PAGE && !fromCache) noOlderMessages = true;
+      if(fromCache) showToast("Chat Club", "Firebase ran out for today, so these are only the older messages saved on this device. The rest come back after about 6 pm.");
       olderMessages = got.concat(olderMessages);
       lastRenderedMessages = got.concat(lastRenderedMessages);
       renderMessages(lastRenderedMessages);
       el.scrollTop = el.scrollHeight - fromBottom; // stay looking at the same message
     } catch(e){
-      showToast("Chat Club", isQuotaError(e) ? "Can't load older messages right now (the free Firebase limit ran out for today)." : "Couldn't load older messages. Try again.");
+      const out = isQuotaError(e) || await firebaseReadsOut();
+      showToast("Chat Club", out ? "Can't load older messages right now: the free Firebase limit ran out for today. They come back after about 6 pm." : "Couldn't load older messages. Try again.");
     } finally { loadingOlder = false; }
   }
 
