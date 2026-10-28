@@ -189,3 +189,35 @@ test("adding a recovery email lets you log in with it and reset your password", 
   await page.click("#authSubmitBtn");
   await page.waitForSelector("#appScreen.active", { timeout: 15000 });
 });
+
+test("huey can pick the new password himself from the request", async ({ browser }) => {
+  const ctxAdmin = await browser.newContext();
+  const admin = await ctxAdmin.newPage();
+  await loginAsAdmin(admin);
+
+  const who = uniqueName("Mo").slice(0, 24);
+  const ctx = await browser.newContext();
+  const page = await ctx.newPage();
+  await signup(page, who);
+  await page.click("#logoutBtn");
+  await page.waitForSelector("#authSubmitBtn", { state: "visible" });
+  await page.fill("#nameInput", who);
+  await page.click("#forgotLink");
+  await expect(page.locator("#authMsg")).toContainText("huey has been asked", { timeout: 10000 });
+
+  const card = admin.locator(".reset-card").filter({ hasText: who });
+  await expect(card).toBeVisible({ timeout: 10000 });
+  admin.once("dialog", (d) => d.accept("hueypicked1"));
+  // (clicked in the page: cards left over from other test runs can push it off screen)
+  await card.locator("button.set").evaluate((b) => b.click());
+  await expect(card).toHaveCount(0, { timeout: 10000 });
+  await expect(page.locator("#authMsg")).toContainText("huey set a new password", { timeout: 10000 });
+
+  await page.fill("#nameInput", who);
+  await page.fill("#passwordInput", "hueypicked1");
+  await page.click("#authSubmitBtn");
+  await page.waitForSelector("#appScreen.active", { timeout: 15000 });
+
+  await ctxAdmin.close();
+  await ctx.close();
+});

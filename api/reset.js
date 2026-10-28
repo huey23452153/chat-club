@@ -54,9 +54,11 @@ module.exports = async (req, res) => {
     res.end(JSON.stringify(body));
   };
   if (req.method !== 'POST') return send(405, { error: 'POST only' });
-  const { id, secret, password } = await readBody(req);
+  // either the asking browser (with its secret), or huey picking the password for them (adminToken)
+  const { id, secret, password, adminToken } = await readBody(req);
+  const byAdmin = typeof adminToken === 'string' && adminToken.length > 20 && adminToken.length < 5000;
   if (typeof id !== 'string' || !/^[A-Za-z0-9]{10,40}$/.test(id)
-    || typeof secret !== 'string' || secret.length < 20 || secret.length > 200
+    || (!byAdmin && (typeof secret !== 'string' || secret.length < 20 || secret.length > 200))
     || typeof password !== 'string' || password.length < 6 || password.length > 128) {
     return send(400, { error: 'Please use a password with at least 6 characters.' });
   }
@@ -76,17 +78,22 @@ module.exports = async (req, res) => {
     const snap = await ref.get();
     const data = snap.exists ? snap.data() : null;
     if (!data) return send(400, { error: 'That request has expired. Tap Forgot password to ask again.' });
-    if (data.status !== 'allowed') return send(400, { error: 'huey has not allowed this yet.' });
+    if (byAdmin) {
+      let who = null;
+      try { who = await lib.auth().verifyIdToken(adminToken); } catch (e) { /* not valid */ }
+      if (!who || who.email !== ADMIN_AUTH_EMAIL) return send(403, { error: 'Only huey can do that.' });
+      if (data.status !== 'pending' && data.status !== 'allowed') return send(400, { error: 'That request was already answered.' });
+    } else if (data.status !== 'allowed') return send(400, { error: 'huey has not allowed this yet.' });
     const allowedAt = data.allowedAt && data.allowedAt.toMillis ? data.allowedAt.toMillis() : 0;
-    if (!allowedAt || Date.now() - allowedAt > ALLOWED_FOR_MS) {
+    if (!byAdmin && (!allowedAt || Date.now() - allowedAt > ALLOWED_FOR_MS)) {
       await ref.delete();
       return send(400, { error: 'That request has expired. Tap Forgot password to ask again.' });
     }
 
     // only the browser that asked holds the secret
-    const given = crypto.createHash('sha256').update(secret).digest();
+    const given = byAdmin ? null : crypto.createHash('sha256').update(secret).digest();
     const wanted = Buffer.from(String(data.keyHash || ''), 'hex');
-    if (wanted.length !== given.length || !crypto.timingSafeEqual(given, wanted)) {
+    if (!byAdmin && (wanted.length !== given.length || !crypto.timingSafeEqual(given, wanted))) {
       const tries = (data.tries || 0) + 1;
       if (tries >= MAX_TRIES) await ref.delete(); else await ref.update({ tries });
       return send(400, { error: 'This device did not make that request. Tap Forgot password to ask again.' });
@@ -106,7 +113,8 @@ module.exports = async (req, res) => {
     }
     await lib.auth().updateUser(user.uid, { password });
     await lib.auth().revokeRefreshTokens(user.uid); // signs out anywhere the old password was in use
-    await ref.delete();
+    // huey's way: leave the request marked "set" so the asking browser can say so (tidied away later)
+    if (byAdmin) await ref.update({ status: 'set' }); else await ref.delete();
     return send(200, { ok: true });
   } catch (e) {
     return send(500, { error: 'Something went wrong. Please try again.' });

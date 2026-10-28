@@ -2014,6 +2014,9 @@
       if(status === "allowed"){
         $("resetBoxText").textContent = `huey said yes. Pick a new password for ${mine.name}:`;
         $("resetBox").style.display = "block";
+      } else if(status === "set"){
+        forgetMyResetRequest();
+        showAuthMsg("huey set a new password for you. Ask huey what it is, then log in with it.");
       } else if(status === "denied"){
         forgetMyResetRequest();
         showAuthMsg("huey said no to resetting that password. Talk to huey if that's a mistake.");
@@ -2071,10 +2074,26 @@
             <div class="toast-text"><strong>${escapeHtml(who)}</strong> wants to set a new password. Only allow it if you're sure it's really them.</div>
             <div class="reset-card-actions">
               <button class="allow">Allow</button>
+              <button class="set">Set it</button>
               <button class="deny">Deny</button>
             </div>`;
           el.querySelector(".allow").addEventListener("click", () => {
             updateDoc(d.ref, { status: "allowed", allowedAt: serverTimestamp() }).catch(() => showToast("Couldn't allow that", "Please try again."));
+          });
+          // or huey picks the new password and tells them it
+          el.querySelector(".set").addEventListener("click", async () => {
+            const password = prompt(`New password for ${who} (at least 6 characters). Tell them what it is:`);
+            if(password === null) return;
+            if(password.length < 6){ showToast("Too short", "Use at least 6 characters."); return; }
+            try{
+              const res = await fetch("/api/reset", {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ id: d.id, password, adminToken: await auth.currentUser.getIdToken() })
+              });
+              const out = await res.json().catch(() => ({}));
+              if(!res.ok || !out.ok) showToast("Couldn't set it", out.error || "Please try again.");
+              else showToast("Password set", `Tell ${who} their new password.`);
+            } catch(e){ showToast("Couldn't set it", "Please check your connection."); }
           });
           el.querySelector(".deny").addEventListener("click", () => {
             updateDoc(d.ref, { status: "denied" }).catch(() => showToast("Couldn't deny that", "Please try again."));
