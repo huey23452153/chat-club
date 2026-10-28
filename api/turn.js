@@ -15,6 +15,16 @@ module.exports = async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     res.end(JSON.stringify(body));
   };
+  // Metered's free plan (no card): METERED_APP (the name in yourname.metered.live) and METERED_API_KEY
+  const app = process.env.METERED_APP, key = process.env.METERED_API_KEY;
+  if (app && key) {
+    try {
+      const host = String(app).replace(/^https?:\/\//, '').replace(/\.metered\.live.*$/, '');
+      const r = await fetch(`https://${encodeURIComponent(host)}.metered.live/api/v1/turn/credentials?apiKey=${encodeURIComponent(key)}`);
+      const servers = r.ok ? await r.json() : [];
+      if (Array.isArray(servers) && servers.length) return send({ iceServers: STUN.concat(servers), turn: true });
+    } catch (e) { /* fall through */ }
+  }
   const id = process.env.CF_TURN_KEY_ID, token = process.env.CF_TURN_API_TOKEN;
   if (!id || !token) return send({ iceServers: STUN, turn: false });
   try {
