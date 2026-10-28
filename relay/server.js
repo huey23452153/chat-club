@@ -73,7 +73,7 @@ function chatConnection(ws, q) {
   const uid = q.get('uid'), name = String(q.get('name') || 'Friend').replace(/[\u0000-\u001f]/g, '').slice(0, 30);
   if (!okUid(uid)) return ws.close(4000, 'bad');
   ws.alive = true; ws.on('pong', () => { ws.alive = true; }); ws.groups = new Set();
-  ws.on('message', (data) => {
+  ws.on('message', async (data) => {
     let m; try { m = JSON.parse(String(data)); } catch (e) { return; }
     if (m.t === 'join' && Array.isArray(m.groups)) {
       for (const g of m.groups.filter(okGroup).slice(0, 100)) {
@@ -81,6 +81,12 @@ function chatConnection(ws, q) {
         const now = Date.now(); c.msgs = c.msgs.filter((x) => now - x.at < KEEP_MS);
         ws.send(JSON.stringify({ t: 'history', groupId: g, msgs: c.msgs }));
       }
+    } else if (m.t === 'del' && ws.groups.has(m.groupId) && typeof m.id === 'string') {
+      // taking a message back: your own, or any of them for huey (who proves it with his login token)
+      const c = chatOf(m.groupId), i = c.msgs.findIndex((x) => x.id === m.id); if (i < 0) return;
+      if (c.msgs[i].senderId !== uid && !(await adminFromToken(m.token))) return;
+      c.msgs.splice(i, 1);
+      const out = JSON.stringify({ t: 'del', groupId: m.groupId, id: m.id }); for (const sub of c.subs) if (sub.readyState === 1) sub.send(out);
     } else if (m.t === 'msg' && ws.groups.has(m.groupId)) {
       const text = typeof m.text === 'string' ? m.text.slice(0, 500) : '', gifUrl = okGif(m.gifUrl) ? m.gifUrl : undefined;
       if (!text && !gifUrl) return;
