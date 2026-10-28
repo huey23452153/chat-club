@@ -463,6 +463,9 @@
     object-fit:cover; cursor:pointer;
   }
   .bubble img.msg-image + .msg-text{ margin-top:6px; }
+  /* backup chat banner (when Firebase's free limit runs out) */
+  .backup-banner{ position:fixed; top:8px; left:50%; transform:translateX(-50%); z-index:350; width:min(560px, calc(100vw - 24px)); display:none; padding:8px 12px; border-radius:12px; background:#fff3cd; color:#5c4400; border:1px solid #f0d68a; font-size:13px; line-height:1.4; box-shadow:0 6px 18px -8px rgba(0,0,0,.35); }
+  .backup-banner.show{ display:block; }
   /* GIF search */
   .gif-panel{ position:fixed; left:50%; bottom:84px; transform:translateX(-50%); width:min(420px, calc(100vw - 24px)); height:min(440px, 60vh); z-index:300; display:none; flex-direction:column; gap:8px; padding:10px; background:var(--surface); border:1px solid var(--line); border-radius:16px; box-shadow:0 12px 30px -8px rgba(0,0,0,.35); }
   .gif-panel.show{ display:flex; }
@@ -1260,6 +1263,7 @@
   <div class="gif-grid" id="gifGrid"></div>
   <div class="gif-credit">Powered by GIPHY</div>
 </div>
+<div class="backup-banner" id="backupBanner">⚠️ <b>Backup chat is on.</b> Chat Club's free Firebase limit ran out for today, so messages are going through the backup. They still send, but the backup only keeps them for about 12 hours, and photos can't be sent until it's back (usually by tomorrow).</div>
 <div class="image-viewer" id="imageViewer"><img id="imageViewerImg" alt="Photo, full size"><button id="imageViewerClose" title="Close">✕</button></div>
 <div class="call-overlay" id="callOverlay">
   <div class="call-pip-bar" id="callPipBar">
@@ -2302,8 +2306,12 @@
       if(user.displayName) rememberLoginEmail(user.displayName, user.email);
       let displayName = user.displayName || signingUpName;
       if(!displayName){
-        const snap = await getDoc(doc(db, "users", user.uid));
-        displayName = snap.exists() ? snap.data().displayName : (user.email || "Friend");
+        // (if the database can't answer, e.g. the free limit ran out, sign in anyway)
+        try{
+          const snap = await getDoc(doc(db, "users", user.uid));
+          displayName = snap.exists() ? snap.data().displayName : null;
+        } catch(e){ displayName = null; }
+        displayName = displayName || (user.email || "Friend").split("@")[0];
       }
       currentUser = { uid: user.uid, email: user.email, displayName };
 
@@ -2542,6 +2550,9 @@
       // the chats you pinned first, then whichever was last active
       myGroups.sort((a,b) => (isPinnedChat(b) - isPinnedChat(a))
         || ((b.updatedAt?.toMillis?.() || 0) - (a.updatedAt?.toMillis?.() || 0)));
+      cacheGroups();
+      // (?backup in the address turns the backup chat on, to try it out)
+      if(new URLSearchParams(location.search).has("backup")) enterBackupMode();
       const currentGroupIds = new Set(myGroups.map(g => g.id));
 
       // Compare against the previous snapshot (skip on the very first load)
@@ -2577,7 +2588,66 @@
           renderSeenIndicator();
         }
       }
-    });
+    }, (err) => { if(isQuotaError(err)) enterBackupMode(); });
+  }
+
+  // =========================================================================
+  //  BACKUP CHAT: when Firebase's free daily limit runs out, everything that
+  //  reads or writes the database fails. Chat Club then switches to the backup
+  //  chat on the relay server: your chat list comes from the copy remembered on
+  //  this device, and messages go through the relay (kept there ~12 hours).
+  // =========================================================================
+  const BACKUP_WS = "wss://dust-crawler-relay.onrender.com/chat";
+  let backupMode = false, backupSocket = null, backupRetry = 0;
+  const backupMsgs = new Map(); // groupId -> [relay messages]
+  const isQuotaError = (e) => !!e && (e.code === "resource-exhausted" || /quota|resource.exhausted/i.test(e.message || ""));
+  const groupsCacheKey = () => "chatclub_groups_" + (currentUser ? currentUser.uid : "");
+  function cacheGroups(){
+    try{ localStorage.setItem(groupsCacheKey(), JSON.stringify(myGroups.map(g => ({ id: g.id, name: g.name, memberIds: g.memberIds, memberNames: g.memberNames, ownerId: g.ownerId, pendingIds: [], pendingNames: {} })))); } catch(e){}
+  }
+  function enterBackupMode(){
+    if(backupMode || !currentUser) return;
+    backupMode = true;
+    if(!myGroups.length){ try{ myGroups = JSON.parse(localStorage.getItem(groupsCacheKey()) || "[]"); } catch(e){ myGroups = []; } }
+    renderGroupList();
+    $("backupBanner").classList.add("show");
+    connectBackup();
+    if(activeGroupId) showBackupChat(activeGroupId);
+  }
+  function backupToMessage(b){
+    const t = { toDate: () => new Date(b.at), toMillis: () => b.at };
+    return { id: b.id, text: b.text || "", gifUrl: b.gifUrl, senderId: b.senderId, senderName: b.senderName, createdAt: t };
+  }
+  function showBackupChat(groupId){
+    if(groupId !== activeGroupId) return;
+    const msgs = (backupMsgs.get(groupId) || []).map(backupToMessage);
+    lastRenderedMessages = msgs;
+    renderMessages(msgs);
+  }
+  function connectBackup(){
+    if(backupSocket || !currentUser) return;
+    let ws;
+    try{ ws = new WebSocket(BACKUP_WS + "?uid=" + encodeURIComponent(currentUser.uid) + "&name=" + encodeURIComponent(currentUser.displayName || "Friend")); } catch(e){ return; }
+    backupSocket = ws;
+    ws.onopen = () => { backupRetry = 0; ws.send(JSON.stringify({ t: "join", groups: myGroups.map(g => g.id) })); };
+    ws.onmessage = (e) => {
+      let m; try{ m = JSON.parse(e.data); } catch(err){ return; }
+      if(m.t === "history"){ backupMsgs.set(m.groupId, m.msgs || []); showBackupChat(m.groupId); }
+      else if(m.t === "msg" && m.msg){
+        const list = backupMsgs.get(m.msg.groupId) || []; list.push(m.msg); backupMsgs.set(m.msg.groupId, list);
+        showBackupChat(m.msg.groupId);
+        if(m.msg.senderId !== currentUser.uid) notifyNewMessage(m.msg.senderName || "Someone", m.msg.text || "sent a GIF");
+      }
+    };
+    ws.onclose = () => {
+      if(backupSocket === ws) backupSocket = null;
+      if(backupMode && currentUser) setTimeout(connectBackup, Math.min(60000, 2000 * 2 ** backupRetry++));
+    };
+  }
+  function sendBackup(text, gifUrl){
+    if(!backupSocket || backupSocket.readyState !== 1){ showToast("Chat Club", "The backup chat is still connecting (it can take up to a minute to wake up). Try again in a moment."); return false; }
+    backupSocket.send(JSON.stringify({ t: "msg", groupId: activeGroupId, text, gifUrl }));
+    return true;
   }
 
   function renderGroupList(){
@@ -2755,6 +2825,11 @@
     if(g) renderChatHeader(g);
     markGroupRead(groupId);
 
+    if(backupMode){
+      if(messagesUnsub) messagesUnsub(); messagesUnsub = null;
+      showBackupChat(groupId);
+      return;
+    }
     if(messagesUnsub) messagesUnsub();
     // only the newest 80 messages: loading a whole chat's history every time it opened used up
     // the free Firebase reads for the day (each message counts as one read)
@@ -2781,7 +2856,7 @@
       lastRenderedMessages = msgs;
       renderMessages(msgs);
       markGroupRead(groupId);
-    });
+    }, (err) => { if(isQuotaError(err)) enterBackupMode(); });
 
     if(typingUnsub) typingUnsub();
     const tq = collection(db, "groups", groupId, "typing");
@@ -3012,7 +3087,7 @@
         const imageHtml = isValidImageDataUrl(m.imageData)
           ? `<img class="msg-image" src="${m.imageData}" alt="Shared photo">`
           : isGiphyGifUrl(m.gifUrl) ? `<img class="msg-image" src="${m.gifUrl}" alt="GIF" loading="lazy" referrerpolicy="no-referrer">` : "";
-        const textHtml = m.text ? `<div class="msg-text">${linkifyText(m.text)}</div>` + linkPreviewHtml(m.text) : "";
+        const textHtml = m.text ? `<div class="msg-text">${linkifyText(stripZalgo(m.text))}</div>` + linkPreviewHtml(m.text) : "";
         const pollHtml = m.poll ? renderPoll(m.id, m.poll) : "";
         const bubbleInner = replyQuoteHtml + imageHtml + textHtml + pollHtml;
 
@@ -3348,7 +3423,12 @@
   if(autocorrectOn()) loadBigAutocorrect();
   updateAutocorrectBtn();
 
+  // (the glitchy stacked-up text: letters with piles of accent marks on them.
+  // Real accents like é are one mark, so they're kept; the piles are dropped.)
+  const ZALGO_MARKS = /[\u0300-\u036f\u0483-\u0489\u1ab0-\u1aff\u1dc0-\u1dff\u20d0-\u20ff\ufe20-\ufe2f]+/g;
+  function stripZalgo(text){ return typeof text === "string" ? text.normalize("NFC").replace(ZALGO_MARKS, "") : text; }
   function applyWordSwaps(text){
+    text = stripZalgo(text);
     if(!text) return text;
     return text.replace(WORD_SWAP_REGEX, (...args) => {
       const match = args[0];
@@ -3674,6 +3754,11 @@
     replyingTo = null;
     showReplyPreview();
 
+    if(backupMode){
+      if(imageDataUrl) showToast("Chat Club", "Photos can't be sent while the backup chat is on. GIFs and text still work.");
+      if(text || gifUrl) sendBackup(text ? applyWordSwaps(text.slice(0, 500)) : "", gifUrl);
+      return;
+    }
     try{
       const payload = {
         text: text ? applyWordSwaps(text.slice(0, 500)) : "",
@@ -3693,6 +3778,8 @@
       await addDoc(collection(db, "groups", activeGroupId, "messages"), payload);
       await updateDoc(doc(db, "groups", activeGroupId), unreadBump(activeGroupId));
     } catch(err){
+      // the free limit ran out: switch to the backup chat and send it there instead
+      if(isQuotaError(err)){ enterBackupMode(); if(text || gifUrl) setTimeout(() => sendBackup(text ? applyWordSwaps(text.slice(0, 500)) : "", gifUrl), 2500); return; }
       composerHint.textContent = "Message didn't send — please try again.";
       composerHint.classList.add("show");
       setTimeout(() => {
