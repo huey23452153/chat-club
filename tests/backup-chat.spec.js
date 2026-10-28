@@ -24,5 +24,12 @@ test("backup chat: messages still go between friends when the backup is on", asy
     await a.fill("#messageInput", text); await a.click("#sendBtn"); await a.waitForTimeout(3500);
     return b.locator(".bubble", { hasText: text }).count();
   }, { timeout: 90000, intervals: [1000] }).toBeGreaterThan(0);
+
+  // and taking it back (hold your message, then Delete) takes it away for the other person too
+  const mine = a.locator(".bubble", { hasText: text }).first();
+  const box = await mine.boundingBox();
+  await a.mouse.move(box.x + box.width / 2, box.y + box.height / 2); await a.mouse.down(); await a.waitForTimeout(900); await a.mouse.up();
+  await a.click(".edit-btn.delete");
+  await expect(b.locator(".bubble", { hasText: text })).toHaveCount(0, { timeout: 15000 });
   await ctxA.close(); await ctxB.close();
 });

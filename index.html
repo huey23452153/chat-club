@@ -2905,6 +2905,7 @@
     ws.onmessage = (e) => {
       let m; try{ m = JSON.parse(e.data); } catch(err){ return; }
       if(m.t === "history"){ backupMsgs.set(m.groupId, m.msgs || []); showBackupChat(m.groupId); }
+      else if(m.t === "del"){ backupMsgs.set(m.groupId, (backupMsgs.get(m.groupId) || []).filter(x => x.id !== m.id)); showBackupChat(m.groupId); }
       else if(m.t === "msg" && m.msg){
         const list = backupMsgs.get(m.msg.groupId) || []; list.push(m.msg); backupMsgs.set(m.msg.groupId, list);
         showBackupChat(m.msg.groupId);
@@ -2916,6 +2917,14 @@
       if(backupMode && currentUser) setTimeout(connectBackup, Math.min(60000, 2000 * 2 ** backupRetry++));
     };
   }
+  // (taking a message back on the backup chat; huey can take anyone's back, proved with his login token)
+  async function deleteBackup(id){
+    if(!backupSocket || backupSocket.readyState !== 1){ showToast("Chat Club", "Couldn't remove that message. Try again in a moment."); return; }
+    let token; if(isAdmin()) try{ token = await auth.currentUser.getIdToken(); } catch(e){}
+    backupSocket.send(JSON.stringify({ t: "del", groupId: activeGroupId, id, token }));
+  }
+  // (phones: putting the cursor back in the typing box pops the keyboard up, so only on computers)
+  const backToTyping = () => { if(!matchMedia("(pointer: coarse)").matches) messageInput.focus(); };
   function sendBackup(text, gifUrl){
     if(!backupSocket || backupSocket.readyState !== 1){ showToast("Chat Club", "The backup chat is still connecting (it can take up to a minute to wake up). Try again in a moment."); return false; }
     backupSocket.send(JSON.stringify({ t: "msg", groupId: activeGroupId, text, gifUrl }));
@@ -3650,8 +3659,9 @@
     // getting keys afterwards.)
     if(btn.dataset.action === "admin-delete" && isAdmin()){
       if(btn.dataset.armed){
-        deleteDoc(doc(db, "groups", activeGroupId, "messages", id)).catch(() => showToast("Chat Club", "Couldn't remove that message."));
-        messageInput.focus();
+        if(backupMode) deleteBackup(id);
+        else deleteDoc(doc(db, "groups", activeGroupId, "messages", id)).catch(() => showToast("Chat Club", "Couldn't remove that message."));
+        backToTyping();
       } else {
         btn.dataset.armed = "1"; btn.textContent = "Remove?"; btn.classList.add("armed");
         setTimeout(() => { if(btn.isConnected){ delete btn.dataset.armed; btn.textContent = "🗑️"; btn.classList.remove("armed"); } }, 3000);
@@ -3660,10 +3670,12 @@
     }
     if(btn.dataset.action === "delete"){
       editingMessageId = null;
-      deleteDoc(doc(db, "groups", activeGroupId, "messages", id)).catch(() => {});
+      if(backupMode) deleteBackup(id);
+      else deleteDoc(doc(db, "groups", activeGroupId, "messages", id)).catch(() => {});
       renderMessages(lastRenderedMessages);
     }
 
+    if(btn.dataset.action === "save" && backupMode){ editingMessageId = null; showToast("Chat Club", "Editing doesn't work on the backup chat. You can delete it and send it again."); renderMessages(lastRenderedMessages); return; }
     if(btn.dataset.action === "save"){
       const ta = document.getElementById(`editTextarea-${id}`);
       const newText = ta ? ta.value.trim() : "";
@@ -3715,7 +3727,8 @@
     editingMessageId = id;
     renderMessages(lastRenderedMessages);
     const ta = document.getElementById(`editTextarea-${id}`);
-    if(ta){ ta.focus(); ta.selectionStart = ta.selectionEnd = ta.value.length; }
+    // (not on phones: the keyboard would pop up over the Delete / Save buttons; tap the box to type)
+    if(ta && !matchMedia("(pointer: coarse)").matches){ ta.focus(); ta.selectionStart = ta.selectionEnd = ta.value.length; }
   }
   $("messagesEl").addEventListener("pointerdown", (e) => {
     const bubble = e.target.closest(".bubble[data-editable]");

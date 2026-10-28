@@ -1,6 +1,11 @@
 const { test, expect } = require("@playwright/test");
 const { PASSWORD, uniqueName, signup, createGroup, inviteToGroup, acceptFirstInvite } = require("./helpers");
 
+// (forgot password cards left over from other tests would cover huey's buttons)
+test.beforeEach(async ({ request }) => {
+  await request.delete("http://127.0.0.1:8080/emulator/v1/projects/school-chat-9e4d8/databases/(default)/documents/resetRequests").catch(() => {});
+});
+
 // logs in as huey (the admin), making the account if this emulator doesn't have it yet
 async function loginAsAdmin(page) {
   for (let i = 0; i < 3; i++) {
