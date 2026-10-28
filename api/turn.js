@@ -1,0 +1,33 @@
+// Call relay servers: GET /api/turn → { iceServers: [...] }
+//
+// Two people on different wifi usually can't connect a call straight to each
+// other, so the sound and video go through a TURN server in the middle. This
+// asks Cloudflare's TURN service for short-lived logins (its key stays here on
+// the server: CF_TURN_KEY_ID and CF_TURN_API_TOKEN, set in Vercel, never in
+// the repo). Without them it just hands back the free STUN servers, which only
+// work when the two people's networks allow a direct connection.
+const STUN = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] }];
+
+module.exports = async (req, res) => {
+  const send = (body) => {
+    res.statusCode = 200;
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    res.end(JSON.stringify(body));
+  };
+  const id = process.env.CF_TURN_KEY_ID, token = process.env.CF_TURN_API_TOKEN;
+  if (!id || !token) return send({ iceServers: STUN, turn: false });
+  try {
+    const r = await fetch(`https://rtc.live.cloudflare.com/v1/turn/keys/${encodeURIComponent(id)}/credentials/generate-ice-servers`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ttl: 6 * 3600 }), // a login lasts 6 hours: long enough for any call
+    });
+    if (!r.ok) return send({ iceServers: STUN, turn: false });
+    const data = await r.json();
+    const servers = Array.isArray(data.iceServers) ? data.iceServers : data.iceServers ? [data.iceServers] : [];
+    return send({ iceServers: STUN.concat(servers), turn: servers.length > 0 });
+  } catch (e) {
+    return send({ iceServers: STUN, turn: false });
+  }
+};

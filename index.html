@@ -1690,15 +1690,22 @@
   // Relay Project's public shared TURN servers cover that for free (shared/
   // rate-limited, no signup) as a fallback that only gets used when a direct
   // route genuinely isn't possible.
-  const RTC_CONFIG = { iceServers: [
+  // (The Open Relay Project's free shared TURN servers shut down, so calls
+  // between different wifi networks stopped connecting. Now /api/turn hands out
+  // short-lived logins for Cloudflare's TURN service; until that's set up it
+  // only returns STUN, which works when the networks allow a direct route.)
+  let RTC_CONFIG = { iceServers: [
     { urls: "stun:stun.l.google.com:19302" },
-    { urls: "stun:stun1.l.google.com:19302" },
-    { urls: "stun:stun.relay.metered.ca:80" },
-    { urls: "turn:global.relay.metered.ca:80", username: "openrelayproject", credential: "openrelayproject" },
-    { urls: "turn:global.relay.metered.ca:80?transport=tcp", username: "openrelayproject", credential: "openrelayproject" },
-    { urls: "turn:global.relay.metered.ca:443", username: "openrelayproject", credential: "openrelayproject" },
-    { urls: "turns:global.relay.metered.ca:443?transport=tcp", username: "openrelayproject", credential: "openrelayproject" }
+    { urls: "stun:stun.cloudflare.com:3478" }
   ] };
+  async function refreshIceServers(){
+    try{
+      const data = await (await fetch("/api/turn")).json();
+      if(Array.isArray(data.iceServers) && data.iceServers.length) RTC_CONFIG = { iceServers: data.iceServers };
+    } catch(e){ /* keep the STUN ones */ }
+  }
+  refreshIceServers();
+  setInterval(refreshIceServers, 4 * 3600 * 1000); // the logins last 6 hours
 
   const AVATAR_COLORS = [
     "#1D7874","#E4572E","#5B5F97","#2E86AB","#EE6C4D","#3D9970","#8E44AD","#D6A73B",
