@@ -18,7 +18,28 @@ const server = http.createServer((req, res) => {
 });
 const wss = new WebSocketServer({ server, maxPayload: MAX_MSG });
 
+// CHAT CLUB "WHO'S ONLINE": each open Chat Club connects to /presence?uid=… and says which friends it wants to
+// know about ({ watch: [uids] }); this tells it which of them are connected right now, and again whenever one comes
+// or goes. Nothing is stored and nothing touches Firebase (doing this with database writes used up its free limit).
+const presence = new Map();                  // uid -> Set<socket>
+const okUid = (s) => typeof s === 'string' && /^[A-Za-z0-9]{6,64}$/.test(s);
+const tellWatchers = (uid) => { for (const c of wss.clients) if (c.watch && c.watch.has(uid) && c.readyState === 1) c.send(JSON.stringify({ t: 'online', uid, on: presence.has(uid) })); };
+function presenceConnection(ws, q) {
+  const uid = q.get('uid'); if (!okUid(uid)) return ws.close(4000, 'bad');
+  ws.alive = true; ws.on('pong', () => { ws.alive = true; });
+  const first = !presence.has(uid); if (first) presence.set(uid, new Set()); presence.get(uid).add(ws);
+  if (first) tellWatchers(uid);
+  ws.on('message', (data) => {
+    let m; try { m = JSON.parse(String(data)); } catch (e) { return; }
+    if (!Array.isArray(m.watch)) return;
+    ws.watch = new Set(m.watch.filter(okUid).slice(0, 300));
+    ws.send(JSON.stringify({ t: 'online-list', online: [...ws.watch].filter((u) => presence.has(u)) }));
+  });
+  ws.on('close', () => { const set = presence.get(uid); if (!set) return; set.delete(ws); if (!set.size) { presence.delete(uid); tellWatchers(uid); } });
+}
+
 wss.on('connection', (ws, req) => {
+  if (new URL(req.url, 'http://x').pathname === '/presence') return presenceConnection(ws, new URL(req.url, 'http://x').searchParams);
   const q = new URL(req.url, 'http://x').searchParams, code = String(q.get('room') || '').toUpperCase(), role = q.get('role'), id = q.get('id');
   if (!ok(code) || !okId(id) || (role !== 'host' && role !== 'join')) return ws.close(4000, 'bad');
   let room = rooms.get(code);
