@@ -1645,7 +1645,7 @@
   } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-auth.js";
   import {
     getFirestore, doc, setDoc, getDoc, getDocs, collection, addDoc, updateDoc, deleteDoc,
-    query, where, orderBy, onSnapshot, serverTimestamp, arrayUnion, arrayRemove, deleteField, increment,
+    query, where, orderBy, limitToLast, onSnapshot, serverTimestamp, arrayUnion, arrayRemove, deleteField, increment,
     connectFirestoreEmulator
   } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
 
@@ -2728,7 +2728,9 @@
     markGroupRead(groupId);
 
     if(messagesUnsub) messagesUnsub();
-    const mq = query(collection(db, "groups", groupId, "messages"), orderBy("createdAt", "asc"));
+    // only the newest 80 messages: loading a whole chat's history every time it opened used up
+    // the free Firebase reads for the day (each message counts as one read)
+    const mq = query(collection(db, "groups", groupId, "messages"), orderBy("createdAt", "asc"), limitToLast(80));
     let seenMessageIds = new Set();
     let firstMessagesLoad = true;
     // Only messages sent after you opened this chat can ping you. (The chat can
