@@ -129,7 +129,29 @@ function watchConnection(ws, q) {
   });
 }
 
+// ---- one-off mailbox: hands a small message from one page to another under a random code ----
+// (Chat Club waits on ?role=get; Dust Crawler, open in your normal browser, sends your controls with ?role=put)
+const mailboxes = new Map();                 // code -> Set<waiting socket>
+function mailConnection(ws, q) {
+  const box = q.get('box'), role = q.get('role');
+  if (typeof box !== 'string' || !/^[A-Za-z0-9]{12,40}$/.test(box)) return ws.close(4000, 'bad');
+  ws.alive = true; ws.on('pong', () => { ws.alive = true; });
+  if (role === 'get') {
+    let set = mailboxes.get(box); if (!set) { if (mailboxes.size >= 500) return ws.close(4002, 'full'); set = new Set(); mailboxes.set(box, set); }
+    set.add(ws);
+    const bye = setTimeout(() => ws.close(), 10 * 60 * 1000); // nobody waits forever
+    ws.on('close', () => { clearTimeout(bye); set.delete(ws); if (!set.size) mailboxes.delete(box); });
+  } else if (role === 'put') {
+    ws.on('message', (data) => {
+      const set = mailboxes.get(box), s = String(data);
+      let n = 0; if (set) for (const c of set) if (c.readyState === 1) { c.send(s); n++; }
+      ws.send(JSON.stringify({ t: n ? 'delivered' : 'nobody' }));
+    });
+  } else ws.close(4000, 'bad');
+}
+
 wss.on('connection', (ws, req) => {
+  if (new URL(req.url, 'http://x').pathname === '/mail') return mailConnection(ws, new URL(req.url, 'http://x').searchParams);
   if (new URL(req.url, 'http://x').pathname === '/watch') return watchConnection(ws, new URL(req.url, 'http://x').searchParams);
   if (new URL(req.url, 'http://x').pathname === '/chat') return chatConnection(ws, new URL(req.url, 'http://x').searchParams);
   if (new URL(req.url, 'http://x').pathname === '/presence') return presenceConnection(ws, new URL(req.url, 'http://x').searchParams);

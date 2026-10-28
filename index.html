@@ -1036,6 +1036,8 @@
   .game-maps h2{ margin:0; font-size:24px; }
   .game-maps p{ margin:0; opacity:.75; max-width:340px; }
   .game-maps-row{ display:flex; flex-wrap:wrap; gap:10px; justify-content:center; }
+  .game-controls-btn{ margin-top:6px; border:1.5px solid rgba(255,255,255,.35); background:transparent; color:#fff; border-radius:999px; padding:8px 14px; font-weight:700; font-size:13px; cursor:pointer; }
+  .game-maps p.game-controls-note{ font-size:13px; max-width:380px; }
   .game-maps-row button{
     border:0; border-radius:14px; padding:14px 18px; min-width:120px; cursor:pointer;
     font:600 15px system-ui, sans-serif; background:#e0a23a; color:#1b1206;
@@ -1348,6 +1350,8 @@
       <button data-map="outback">🏜️ Outback</button>
       <button data-map="highcountry">⛰️ High Country</button>
     </div>
+    <button class="game-controls-btn" id="gameControlsBtn">🎮 Use my controls from my normal Dust Crawler</button>
+    <p class="game-controls-note" id="gameControlsNote"></p>
   </div>
 </div>
 <!-- Shown to whoever is sharing their screen: first to ask permission, then
@@ -5701,9 +5705,66 @@
     const btn = e.target.closest("button[data-map]");
     if(!btn || !activeCallGroupId) return;
     const name = (currentUser && currentUser.displayName || "").slice(0, 14);
-    $("gameFrame").src = GAME_URL + "?cc=" + gameRoomFor(activeCallGroupId) + "&map=" + btn.dataset.map + "&name=" + encodeURIComponent(name);
+    const controls = myGameControls();
+    $("gameFrame").src = GAME_URL + "?cc=" + gameRoomFor(activeCallGroupId) + "&map=" + btn.dataset.map + "&name=" + encodeURIComponent(name)
+      + (controls ? "#dcs=" + encodeURIComponent(btoa(unescape(encodeURIComponent(JSON.stringify(controls))))) : "");
     $("gameMaps").style.display = "none";
     $("gameFrame").focus();
+  });
+
+  // ---- your Dust Crawler controls, kept on your Chat Club account ----
+  // The game in here gets its own empty settings, so your key bindings, wheel and shifter would be
+  // back to default. "Use my controls" opens the normal game in your browser, which sends its
+  // controls here through the relay; they're saved on your account (users/{uid}.dcControls) and
+  // handed to the game every time it opens. Changing a control in here saves the new ones too.
+  const DC_CONTROLS_KEY = () => "chatclub_dc_controls_" + (currentUser?.uid || "");
+  let dcControls = null;
+  function myGameControls(){
+    if(dcControls) return dcControls;
+    try{ dcControls = JSON.parse(localStorage.getItem(DC_CONTROLS_KEY()) || "null"); } catch(e){}
+    return dcControls;
+  }
+  function cleanControls(data){
+    if(!data || typeof data !== "object") return null;
+    const out = {};
+    for(const [k, v] of Object.entries(data)) if(/^dustCrawler2\.\w+$/.test(k) && typeof v === "string" && v.length < 20000) out[k] = v;
+    return Object.keys(out).length ? out : null;
+  }
+  function saveGameControls(data){
+    const clean = cleanControls(data); if(!clean || !currentUser) return false;
+    dcControls = clean;
+    try{ localStorage.setItem(DC_CONTROLS_KEY(), JSON.stringify(clean)); } catch(e){}
+    setDoc(doc(db, "users", currentUser.uid), { dcControls: JSON.stringify(clean) }, { merge: true }).catch(() => {});
+    return true;
+  }
+  // (on another device: get them from the account the first time the game is opened)
+  async function loadGameControlsFromAccount(){
+    if(myGameControls() || !currentUser) return;
+    try{
+      const snap = await getDoc(doc(db, "users", currentUser.uid));
+      const saved = snap.data()?.dcControls;
+      if(saved){ dcControls = cleanControls(JSON.parse(saved)); if(dcControls) localStorage.setItem(DC_CONTROLS_KEY(), JSON.stringify(dcControls)); }
+    } catch(e){}
+  }
+  $("gameBtn").addEventListener("click", () => { loadGameControlsFromAccount(); });
+  window.addEventListener("message", (e) => {
+    if(e.origin !== new URL(GAME_URL).origin || e.data?.t !== "dc-controls") return;
+    saveGameControls(e.data.data);
+  });
+  $("gameControlsBtn").addEventListener("click", () => {
+    const code = [...crypto.getRandomValues(new Uint8Array(12))].map(x => x.toString(16).padStart(2, "0")).join("");
+    const note = $("gameControlsNote");
+    note.textContent = "Opening Dust Crawler in your browser… (the one you normally play in)";
+    let ws;
+    try{ ws = new WebSocket("wss://dust-crawler-relay.onrender.com/mail?box=" + code + "&role=get"); } catch(err){ note.textContent = "Couldn't connect. Try again."; return; }
+    window.open(GAME_URL + "?sendcontrols=" + code, "_blank"); // (right away: a pop-up opened later gets blocked)
+    ws.onmessage = (ev) => {
+      let m; try{ m = JSON.parse(ev.data); } catch(err){ return; }
+      if(m.t !== "dc-controls") return;
+      note.textContent = saveGameControls(m.data) ? "✓ Got your controls! They'll be used every time you play in Chat Club." : "That browser has no controls set up yet (they're all on default there).";
+      ws.close();
+    };
+    ws.onclose = () => { if(note.textContent.startsWith("Opening")) note.textContent = "Didn't get them. Try again (the server might have been asleep)."; };
   });
 
   // The board only lives as long as the call — leaving throws it away.
