@@ -2565,6 +2565,7 @@
       passwordInput.value = ""; nameInput.value = "";
       showScreen("app");
       listenToMyGroups();
+      checkFirebase();
       listenForResetRequests();
       forgetMyResetRequest(); // logged in: no reset needed any more
       listenToMyInvites();
@@ -2874,6 +2875,17 @@
     connectBackup();
     if(activeGroupId) showBackupChat(activeGroupId);
   }
+  // Firebase can run out of reads but still take writes: messages then save, nobody sees them, and nothing
+  // errors to notice it by. So ask Firebase directly now and then (a 429 answer means it's out for the day).
+  async function firebaseReadsOut(){
+    try{ const r = await fetch("https://firestore.googleapis.com/v1/projects/school-chat-9e4d8/databases/(default)/documents/groups/x", { cache: "no-store" }); return r.status === 429; }
+    catch(e){ return false; }
+  }
+  async function checkFirebase(){
+    if(!currentUser || backupMode || /^(localhost|127\.0\.0\.1)$/.test(location.hostname)) return;
+    if(await firebaseReadsOut()) enterBackupMode();
+  }
+  setInterval(checkFirebase, 5 * 60000); // (each check can count as one read, so not too often)
   function backupToMessage(b){
     const t = { toDate: () => new Date(b.at), toMillis: () => b.at };
     return { id: b.id, text: b.text || "", gifUrl: b.gifUrl, senderId: b.senderId, senderName: b.senderName, createdAt: t };
