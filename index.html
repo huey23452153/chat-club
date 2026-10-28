@@ -1129,13 +1129,22 @@
      also swallows clicks meant for it. */
   .video-tile-status[hidden]{ display:none; }
   .call-status{ color:white; font-weight:700; margin: 14px 0; font-size:15px; flex-shrink:0; }
-  .call-controls{ display:flex; gap:14px; flex-shrink:0; }
+  .call-controls{ display:flex; gap:14px; flex-shrink:0; position:relative; }
   .call-control-btn{
     width:52px; height:52px; border-radius:50%; border:none;
     background: rgba(255,255,255,0.15); color:white; font-size:20px;
     display:flex; align-items:center; justify-content:center;
   }
   .call-control-btn.end{ background: var(--coral); }
+  .device-panel{
+    display:none; position:absolute; left:50%; bottom:calc(100% + 12px); transform:translateX(-50%); z-index:5;
+    background:rgba(20,24,28,0.94); color:#fff; border-radius:14px; padding:12px 14px;
+    flex-direction:column; gap:10px; width:min(340px, calc(100% - 32px));
+  }
+  .device-panel.show{ display:flex; }
+  .device-panel label{ display:flex; flex-direction:column; gap:4px; font-size:13px; font-weight:700; }
+  .device-panel select{ width:100%; padding:7px 8px; border-radius:8px; border:none; font-size:14px; }
+
   .call-control-btn.muted{ background: rgba(255,255,255,0.35); }
   .call-control-btn.active{ background: var(--teal); }
   /* No such device (or not allowed): greyed out, can't be clicked. */
@@ -1301,10 +1310,15 @@
     <button class="call-control-btn" id="toggleMicBtn" title="Mute mic">🎤</button>
     <button class="call-control-btn" id="toggleCamBtn" title="Toggle camera">📷</button>
     <button class="call-control-btn" id="switchCameraBtn" title="Switch camera" style="display:none;">🔄</button>
+    <button class="call-control-btn" id="deviceBtn" title="Choose mic and camera">⚙️</button>
     <button class="call-control-btn" id="toggleScreenBtn" title="Share screen">🖥️</button>
     <button class="call-control-btn" id="whiteboardBtn" title="Open whiteboard">🎨</button>
     <button class="call-control-btn" id="gameBtn" title="Play Dust Crawler together">🎮</button>
     <button class="call-control-btn end" id="endCallBtn" title="End call">📞</button>
+    <div class="device-panel" id="devicePanel">
+      <label>🎤 Mic<select id="micSelect"></select></label>
+      <label>📷 Camera<select id="camSelect"></select></label>
+    </div>
   </div>
   <div class="pip-resize-handle" id="pipResizeHandle" title="Drag to resize">⤡</div>
 </div>
@@ -3925,18 +3939,55 @@
   async function getAvailableMedia(){
     const md = navigator.mediaDevices;
     if(!md?.getUserMedia) return new MediaStream();
+    const wanted = (key) => { const id = savedDevice(key); return id ? { deviceId: { ideal: id } } : true; };
     try{
-      return await md.getUserMedia({ video: true, audio: true });
+      return await md.getUserMedia({ video: wanted(CAM_KEY), audio: wanted(MIC_KEY) });
     } catch(err){
       const stream = new MediaStream();
       for(const kind of ["audio", "video"]){
         try{
-          const s = await md.getUserMedia({ [kind]: true });
+          const s = await md.getUserMedia({ [kind]: wanted(kind === "audio" ? MIC_KEY : CAM_KEY) });
           s.getTracks().forEach(t => stream.addTrack(t));
         } catch(e){ /* no such device, or not allowed — go without it */ }
       }
       return stream;
     }
+  }
+
+  // ---- choosing the mic and camera (⚙️ in a call; remembered on this device) ----
+  const MIC_KEY = "chatclub_mic", CAM_KEY = "chatclub_cam";
+  function savedDevice(key){ try{ return localStorage.getItem(key) || ""; } catch(e){ return ""; } }
+  async function fillDevicePanel(){
+    let devices = [];
+    try{ devices = await navigator.mediaDevices.enumerateDevices(); } catch(e){}
+    for(const [sel, kind, track, word] of [
+      [$("micSelect"), "audioinput", localStream?.getAudioTracks()[0], "Mic"],
+      [$("camSelect"), "videoinput", localStream?.getVideoTracks()[0], "Camera"],
+    ]){
+      const list = devices.filter(d => d.kind === kind && d.deviceId);
+      const current = track?.getSettings?.().deviceId || "";
+      sel.innerHTML = "";
+      if(!list.length){ sel.add(new Option(`No ${word.toLowerCase()} found`, "")); sel.disabled = true; continue; }
+      sel.disabled = false;
+      list.forEach((d, i) => sel.add(new Option(d.label || `${word} ${i + 1}`, d.deviceId, false, d.deviceId === current)));
+    }
+  }
+  async function useDevice(kind, deviceId){
+    if(!deviceId || !localStream) return;
+    if(kind === "video" && isSharingScreen){ showToast("Camera", "Stop sharing your screen first, then pick a camera."); return; }
+    if(kind === "audio" && shareAudioTrack){ showToast("Mic", "Stop sharing your screen first, then pick a mic."); return; }
+    let newStream;
+    try{ newStream = await navigator.mediaDevices.getUserMedia({ [kind]: { deviceId: { exact: deviceId } } }); }
+    catch(e){ showToast(kind === "audio" ? "Mic" : "Camera", "Couldn't use that one. It might be busy in another app."); fillDevicePanel(); return; }
+    try{ localStorage.setItem(kind === "audio" ? MIC_KEY : CAM_KEY, deviceId); } catch(e){}
+    const newTrack = (kind === "audio" ? newStream.getAudioTracks() : newStream.getVideoTracks())[0];
+    const oldTrack = (kind === "audio" ? localStream.getAudioTracks() : localStream.getVideoTracks())[0];
+    if(oldTrack){ newTrack.enabled = oldTrack.enabled; localStream.removeTrack(oldTrack); oldTrack.stop(); }
+    localStream.addTrack(newTrack);
+    for(const pc of peerConnections.values()) senderFor(pc, kind)?.replaceTrack(newTrack);
+    if(kind === "video"){ currentFacingMode = "user"; document.getElementById("tile-local")?.classList.remove("back-camera"); }
+    attachStream($("localVideo"), localStream);
+    updateMediaButtons();
   }
 
   function updateMediaButtons(){
@@ -5134,6 +5185,15 @@
   $("switchCameraBtn").addEventListener("click", () => {
     switchCamera().catch(()=>{});
   });
+  $("deviceBtn").addEventListener("click", (e) => {
+    e.stopPropagation();
+    const panel = $("devicePanel");
+    if(panel.classList.toggle("show")) fillDevicePanel();
+  });
+  $("devicePanel").addEventListener("click", (e) => e.stopPropagation());
+  document.addEventListener("click", () => $("devicePanel").classList.remove("show")); // tap anywhere else to close it
+  $("micSelect").addEventListener("change", (e) => useDevice("audio", e.target.value).catch(() => {}));
+  $("camSelect").addEventListener("change", (e) => useDevice("video", e.target.value).catch(() => {}));
 
   // =========================================================================
   //  SHARED WHITEBOARD
