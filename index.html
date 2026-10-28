@@ -2065,18 +2065,20 @@
       const secret = [...bytes].map(x => x.toString(16).padStart(2, "0")).join("");
       const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(secret));
       const keyHash = [...new Uint8Array(digest)].map(x => x.toString(16).padStart(2, "0")).join("");
-      // Firebase first; if it has run out for the day (or doesn't answer in a few seconds), the relay
+      // The relay first: Firebase can run out of reads for the day while still taking writes, and then
+      // nobody (not huey, not the password server) could read the request back. Firebase only if the
+      // relay can't be reached. (Local tests use Firebase unless they point the relay somewhere.)
       let id = null, relay = false;
-      if(!forceRelay && !firebaseResetBroken && !backupMode && !new URLSearchParams(location.search).has("backup")){ // (?backup: try the relay way)
-        try{
-          const ref = await Promise.race([
-            addDoc(collection(db, "resetRequests"), { name, keyHash, status: "pending", createdAt: serverTimestamp() }),
-            new Promise((_, no) => setTimeout(() => no(new Error("timeout")), 6000))
-          ]);
-          id = ref.id;
-        } catch(e){ id = null; }
+      const relayFirst = forceRelay || !/^(localhost|127\.0\.0\.1)$/.test(location.hostname) || !!localStorage.getItem("chatclub_reset_ws") || new URLSearchParams(location.search).has("backup");
+      if(relayFirst){ try{ id = await askRelayForReset(name, keyHash); relay = true; } catch(e){ id = null; } }
+      if(!id && !forceRelay){
+        const ref = await Promise.race([
+          addDoc(collection(db, "resetRequests"), { name, keyHash, status: "pending", createdAt: serverTimestamp() }),
+          new Promise((_, no) => setTimeout(() => no(new Error("timeout")), 8000))
+        ]);
+        id = ref.id;
       }
-      if(!id){ id = await askRelayForReset(name, keyHash); relay = true; }
+      if(!id) throw new Error("nowhere to ask");
       forgetMyResetRequest();
       localStorage.setItem(MY_RESET_KEY, JSON.stringify({ id, secret, name, relay }));
       watchMyResetRequest();
@@ -2155,6 +2157,13 @@
         body: JSON.stringify({ id: mine.id, secret: mine.secret, password, relay: mine.relay })
       });
       const out = await res.json().catch(() => ({}));
+      if(res.status === 500 && !mine.relay){
+        // (the password server couldn't read Firebase: it has run out for the day) ask huey again the backup way
+        firebaseResetBroken = true; forgetMyResetRequest();
+        const told = await tellAdminIForgot(mine.name, true);
+        showAuthMsg(told ? "Firebase is out for today, so huey has been asked again the backup way. Keep this open." : "Couldn't set the password. Please try again in a bit.");
+        return;
+      }
       if(!res.ok || !out.ok){ showAuthMsg(out.error || "Couldn't set the password. Please try again."); return; }
       forgetMyResetRequest();
       $("newPasswordInput").value = "";
