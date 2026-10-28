@@ -224,3 +224,55 @@ test("huey can pick the new password himself from the request", async ({ browser
   await ctxAdmin.close();
   await ctx.close();
 });
+
+// When Firebase has run out for the day, a forgot password request is left on the relay instead: same steps.
+// (?backup makes it use the relay; a relay is run right here for it)
+test.describe("forgot password on the backup", () => {
+  test.describe.configure({ mode: "serial" }); // (one relay for both, on one port)
+  let relay;
+  test.beforeAll(async () => {
+    const { spawn } = require("child_process"), path = require("path");
+    relay = spawn(process.execPath, [path.join(__dirname, "..", "relay", "server.js")], { env: { ...process.env, PORT: "10779", RESET_EMULATOR: "1" } });
+    await new Promise((ok) => relay.stdout.on("data", (d) => String(d).includes("listening") && ok()));
+  });
+  test.afterAll(() => relay && relay.kill());
+
+  for (const way of ["allow", "set"]) test(`huey answers a request left on the relay (${way})`, async ({ browser }) => {
+    test.setTimeout(90000);
+    const useRelay = (p) => p.addInitScript(() => localStorage.setItem("chatclub_reset_ws", "ws://127.0.0.1:10779/reset"));
+    const ctxAdmin = await browser.newContext(), admin = await ctxAdmin.newPage();
+    await useRelay(admin);
+    await loginAsAdmin(admin);
+
+    const who = uniqueName("Bk").slice(0, 24);
+    const ctx = await browser.newContext(), page = await ctx.newPage();
+    await useRelay(page);
+    await signup(page, who);
+    await page.click("#logoutBtn");
+    await page.goto("/?backup");
+    await page.fill("#nameInput", who);
+    await page.click("#forgotLink");
+    await expect(page.locator("#authMsg")).toContainText("huey has been asked", { timeout: 15000 });
+    expect(await page.evaluate(() => JSON.parse(localStorage.getItem("chatclub_forgot_request")).relay)).toBe(true);
+
+    const card = admin.locator(".reset-card").filter({ hasText: who });
+    await expect(card).toBeVisible({ timeout: 15000 });
+    if (way === "allow") {
+      await card.locator("button.allow").evaluate((b) => b.click());
+      await expect(page.locator("#resetForm")).toBeVisible({ timeout: 10000 });
+      await page.fill("#newPasswordInput", "relaynew456");
+      await page.press("#newPasswordInput", "Enter");
+      await page.waitForSelector("#appScreen.active", { timeout: 15000 });
+    } else {
+      admin.once("dialog", (d) => d.accept("relaypick1"));
+      await card.locator("button.set").evaluate((b) => b.click());
+      await expect(page.locator("#authMsg")).toContainText("huey set a new password", { timeout: 10000 });
+      await page.fill("#nameInput", who);
+      await page.fill("#passwordInput", "relaypick1");
+      await page.click("#authSubmitBtn");
+      await page.waitForSelector("#appScreen.active", { timeout: 15000 });
+    }
+    await expect(card).toHaveCount(0, { timeout: 10000 });
+    await ctxAdmin.close(); await ctx.close();
+  });
+});

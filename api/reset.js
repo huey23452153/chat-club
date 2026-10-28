@@ -19,6 +19,7 @@ const NAME_AUTH_DOMAIN = 'chatclub.local';
 const ADMIN_AUTH_EMAIL = 'huey@' + NAME_AUTH_DOMAIN; // never reset this way
 const ALLOWED_FOR_MS = 24 * 60 * 60 * 1000; // an Allow is good for a day
 const MAX_TRIES = 5;
+const RELAY_HTTP = 'https://dust-crawler-relay.onrender.com';
 
 let admin = null;
 function getAdmin() {
@@ -55,7 +56,8 @@ module.exports = async (req, res) => {
   };
   if (req.method !== 'POST') return send(405, { error: 'POST only' });
   // either the asking browser (with its secret), or huey picking the password for them (adminToken)
-  const { id, secret, password, adminToken } = await readBody(req);
+  // (relay: the request was left on the relay, because Firebase had run out for the day)
+  const { id, secret, password, adminToken, relay } = await readBody(req);
   const byAdmin = typeof adminToken === 'string' && adminToken.length > 20 && adminToken.length < 5000;
   if (typeof id !== 'string' || !/^[A-Za-z0-9]{10,40}$/.test(id)
     || (!byAdmin && (typeof secret !== 'string' || secret.length < 20 || secret.length > 200))
@@ -74,7 +76,14 @@ module.exports = async (req, res) => {
   }
 
   try {
-    const ref = lib.firestore().collection('resetRequests').doc(id);
+    let ref;
+    if (relay === true) {
+      // the same steps, with the request kept on the relay (the address is fixed here, never taken from the request)
+      const base = process.env.FIRESTORE_EMULATOR_HOST ? (process.env.RESET_RELAY_HTTP || 'http://127.0.0.1:10779') : RELAY_HTTP;
+      const done = (status) => fetch(`${base}/reset-done?id=${encodeURIComponent(id)}&status=${status}`, { method: 'POST' }).catch(() => {});
+      ref = { get: async () => { const r = await fetch(`${base}/reset-req?id=${encodeURIComponent(id)}`); const d = r.ok ? await r.json() : null; return { exists: !!d, data: () => d && { ...d, allowedAt: d.allowedAt ? { toMillis: () => d.allowedAt } : null } }; },
+        delete: () => done('done'), update: (u) => u.status === 'set' ? done('set') : Promise.resolve() };
+    } else ref = lib.firestore().collection('resetRequests').doc(id);
     const snap = await ref.get();
     const data = snap.exists ? snap.data() : null;
     if (!data) return send(400, { error: 'That request has expired. Tap Forgot password to ask again.' });

@@ -2024,19 +2024,33 @@
       window[name] = (...args) => { const answer = original(...args); window.chatClubDesktop.refocus(); return answer; };
     }
   }
-  const MY_RESET_KEY = "chatclub_forgot_request"; // { id, secret, name } of the request this browser made
+  const MY_RESET_KEY = "chatclub_forgot_request"; // { id, secret, name, relay? } of the request this browser made
+  // When Firebase has run out for the day, the request is left on the relay instead (relay: true): same
+  // steps, the relay just keeps it (see resetConnection in relay/server.js).
+  const RESET_WS = (/^(localhost|127\.0\.0\.1)$/.test(location.hostname) && localStorage.getItem("chatclub_reset_ws")) || "wss://dust-crawler-relay.onrender.com/reset";
+  let myResetSocket = null;
+  function askRelayForReset(name, keyHash){
+    return new Promise((ok, no) => {
+      let ws; try{ ws = new WebSocket(RESET_WS); } catch(e){ return no(e); }
+      const give = setTimeout(() => { try{ ws.close(); } catch(e){} no(new Error("timeout")); }, 70000); // (it can take a minute to wake up)
+      ws.onopen = () => ws.send(JSON.stringify({ t: "ask", name, keyHash }));
+      ws.onmessage = (e) => { let m; try{ m = JSON.parse(e.data); } catch(err){ return; } if(m.t === "asked"){ clearTimeout(give); ws.close(); ok(m.id); } };
+      ws.onclose = () => { clearTimeout(give); no(new Error("closed")); };
+    });
+  }
   let resetRequestsUnsub = null;
   let myResetUnsub = null;
 
   function myResetRequest(){
     try{
       const r = JSON.parse(localStorage.getItem(MY_RESET_KEY) || "null");
-      return r && typeof r.id === "string" && typeof r.secret === "string" && typeof r.name === "string" ? r : null;
+      return r && typeof r.id === "string" && typeof r.secret === "string" && typeof r.name === "string" ? { ...r, relay: r.relay === true } : null;
     } catch(e){ return null; }
   }
   function forgetMyResetRequest(){
     try{ localStorage.removeItem(MY_RESET_KEY); } catch(e){}
     if(myResetUnsub){ myResetUnsub(); myResetUnsub = null; }
+    if(myResetSocket){ const ws = myResetSocket; myResetSocket = null; ws.onclose = null; try{ ws.close(); } catch(e){} }
     $("resetBox").style.display = "none";
   }
 
@@ -2049,9 +2063,20 @@
       const secret = [...bytes].map(x => x.toString(16).padStart(2, "0")).join("");
       const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(secret));
       const keyHash = [...new Uint8Array(digest)].map(x => x.toString(16).padStart(2, "0")).join("");
-      const ref = await addDoc(collection(db, "resetRequests"), { name, keyHash, status: "pending", createdAt: serverTimestamp() });
+      // Firebase first; if it has run out for the day (or doesn't answer in a few seconds), the relay
+      let id = null, relay = false;
+      if(!backupMode && !new URLSearchParams(location.search).has("backup")){ // (?backup: try the relay way)
+        try{
+          const ref = await Promise.race([
+            addDoc(collection(db, "resetRequests"), { name, keyHash, status: "pending", createdAt: serverTimestamp() }),
+            new Promise((_, no) => setTimeout(() => no(new Error("timeout")), 6000))
+          ]);
+          id = ref.id;
+        } catch(e){ id = null; }
+      }
+      if(!id){ id = await askRelayForReset(name, keyHash); relay = true; }
       forgetMyResetRequest();
-      localStorage.setItem(MY_RESET_KEY, JSON.stringify({ id: ref.id, secret, name }));
+      localStorage.setItem(MY_RESET_KEY, JSON.stringify({ id, secret, name, relay }));
       watchMyResetRequest();
       return true;
     } catch(e){
@@ -2067,24 +2092,40 @@
   // this browser's own request: wait for the admin's answer
   function watchMyResetRequest(){
     const mine = myResetRequest();
-    if(!mine || myResetUnsub) return;
+    if(!mine || myResetUnsub || myResetSocket) return;
     showResetBox(`Waiting for huey to say yes to a new password for ${mine.name}. Keep this open (or come back to it on this device).`, false);
+    if(mine.relay){
+      // (kept on the relay: wait there, reconnecting if the connection drops)
+      let tries = 0;
+      const open = () => {
+        let ws; try{ ws = new WebSocket(RESET_WS); } catch(e){ return; }
+        myResetSocket = ws;
+        ws.onopen = () => { tries = 0; ws.send(JSON.stringify({ t: "wait", id: mine.id })); };
+        ws.onmessage = (e) => { let m; try{ m = JSON.parse(e.data); } catch(err){ return; } if(m.t === "status") myResetStatus(mine, m.status, true); };
+        ws.onclose = () => { if(myResetSocket === ws){ myResetSocket = null; setTimeout(() => { if(myResetRequest()?.id === mine.id && !myResetSocket) open(); }, Math.min(30000, 2000 * 2 ** tries++)); } };
+      };
+      open();
+      return;
+    }
     myResetUnsub = onSnapshot(doc(db, "resetRequests", mine.id), (snap) => {
-      if(auth.currentUser) return; // logged in some other way meanwhile
       const status = snap.exists() ? snap.data().status : "gone";
-      if(status === "allowed"){
-        showResetBox(`huey said yes. Pick a new password for ${mine.name}:`, true);
-        if(!nameInput.value.trim()) nameInput.value = mine.name;
-      } else if(status === "set"){
-        forgetMyResetRequest();
-        showAuthMsg("huey set a new password for you. Ask huey what it is, then log in with it.");
-      } else if(status === "denied"){
-        forgetMyResetRequest();
-        showAuthMsg("huey said no to resetting that password. Talk to huey if that's a mistake.");
-      } else if(status === "gone" && !snap.metadata.fromCache){
-        forgetMyResetRequest();
-      }
+      myResetStatus(mine, status, !snap.metadata.fromCache);
     }, () => { /* can't reach it right now: the box keeps waiting */ });
+  }
+  function myResetStatus(mine, status, sure){
+    if(auth.currentUser) return; // logged in some other way meanwhile
+    if(status === "allowed"){
+      showResetBox(`huey said yes. Pick a new password for ${mine.name}:`, true);
+      if(!nameInput.value.trim()) nameInput.value = mine.name;
+    } else if(status === "set"){
+      forgetMyResetRequest();
+      showAuthMsg("huey set a new password for you. Ask huey what it is, then log in with it.");
+    } else if(status === "denied"){
+      forgetMyResetRequest();
+      showAuthMsg("huey said no to resetting that password. Talk to huey if that's a mistake.");
+    } else if(status === "gone" && sure){
+      forgetMyResetRequest();
+    }
   }
   $("cancelResetLink").addEventListener("click", () => { forgetMyResetRequest(); clearAuthMsg(); });
 
@@ -2098,7 +2139,7 @@
     try{
       const res = await fetch("/api/reset", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: mine.id, secret: mine.secret, password })
+        body: JSON.stringify({ id: mine.id, secret: mine.secret, password, relay: mine.relay })
       });
       const out = await res.json().catch(() => ({}));
       if(!res.ok || !out.ok){ showAuthMsg(out.error || "Couldn't set the password. Please try again."); return; }
@@ -2118,8 +2159,69 @@
     }
   });
 
+  // the admin's side, for requests left on the relay (Firebase had run out): the same cards
+  let relayResetSocket = null;
+  const relayResetCards = new Map();
+  function listenForRelayResetRequests(){
+    if(relayResetSocket || !isAdmin()) return;
+    let ws; try{ ws = new WebSocket(RESET_WS + "?role=admin"); } catch(e){ return; }
+    relayResetSocket = ws;
+    ws.onopen = async () => { try{ ws.send(JSON.stringify({ t: "login", token: await auth.currentUser.getIdToken() })); } catch(e){} };
+    const showReq = (r) => {
+      const had = relayResetCards.get(r.id);
+      if(r.status !== "pending"){ if(had){ had.remove(); relayResetCards.delete(r.id); } return; }
+      if(had) return;
+      const who = String(r.name || "Someone").slice(0, 24);
+      const el = document.createElement("div");
+      el.className = "toast reset-card";
+      el.innerHTML = `
+        <div class="toast-name">🔑 Forgot password</div>
+        <div class="toast-text"><strong>${escapeHtml(who)}</strong> wants to set a new password. Only allow it if you're sure it's really them.</div>
+        <div class="reset-card-actions">
+          <button class="allow">Allow</button>
+          <button class="set">Set it</button>
+          <button class="deny">Deny</button>
+        </div>`;
+      el.querySelector(".allow").addEventListener("click", () => ws.send(JSON.stringify({ t: "answer", id: r.id, status: "allowed" })));
+      el.querySelector(".deny").addEventListener("click", () => ws.send(JSON.stringify({ t: "answer", id: r.id, status: "denied" })));
+      el.querySelector(".set").addEventListener("click", async () => {
+        const password = prompt(`New password for ${who} (at least 6 characters). Tell them what it is:`);
+        if(password === null) return;
+        if(password.length < 6){ showToast("Too short", "Use at least 6 characters."); return; }
+        try{
+          const res = await fetch("/api/reset", { method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id: r.id, password, relay: true, adminToken: await auth.currentUser.getIdToken() }) });
+          const out = await res.json().catch(() => ({}));
+          if(!res.ok || !out.ok) showToast("Couldn't set it", out.error || "Please try again.");
+          else showToast("Password set", `Tell ${who} their new password.`);
+        } catch(e){ showToast("Couldn't set it", "Please check your connection."); }
+      });
+      $("toastContainer").appendChild(el);
+      relayResetCards.set(r.id, el);
+      playPingSound();
+      if(notifsOn()){ try{ new Notification("🔑 Forgot password", { body: `${who} wants to set a new password. Open Chat Club to allow or deny.`, icon: "icons/icon-192.png", tag: "chatclub-forgot-" + r.id }); } catch(e){} }
+    };
+    ws.onmessage = (e) => {
+      let m; try{ m = JSON.parse(e.data); } catch(err){ return; }
+      if(m.t === "list") for(const r of m.reqs || []) showReq(r);
+      else if(m.t === "req" && m.req) showReq(m.req);
+    };
+    ws.onclose = () => {
+      if(relayResetSocket !== ws) return;
+      relayResetSocket = null;
+      if(isAdmin()) setTimeout(listenForRelayResetRequests, 15000);
+    };
+  }
+  function stopRelayResetRequests(){
+    const ws = relayResetSocket; relayResetSocket = null;
+    if(ws) try{ ws.close(); } catch(e){}
+    for(const el of relayResetCards.values()) el.remove();
+    relayResetCards.clear();
+  }
+
   // the admin's side: a card for every request waiting for an answer
   function listenForResetRequests(){
+    listenForRelayResetRequests();
     if(resetRequestsUnsub || !auth.currentUser || auth.currentUser.email !== ADMIN_AUTH_EMAIL) return;
     const seenKey = "chatclub_forgot_notes_seen";
     let seen;
@@ -2450,6 +2552,7 @@
       activeGroupId = null;
       if(groupsUnsub) groupsUnsub();
       if(resetRequestsUnsub){ resetRequestsUnsub(); resetRequestsUnsub = null; }
+      stopRelayResetRequests();
       document.querySelectorAll(".reset-card").forEach(el => el.remove());
       watchMyResetRequest(); // back on the log in screen: is a request of ours waiting?
       if(invitesUnsub) invitesUnsub();

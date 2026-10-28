@@ -10,6 +10,17 @@ const MAX_ROOMS = 200, MAX_PER_ROOM = 12, MAX_MSG = 8000;
 
 const server = http.createServer((req, res) => {
   const headers={'access-control-allow-origin':'*','cache-control':'no-store'};
+  // Chat Club backup forgot-password requests (see resetConnection below): looked at by id, and closed off once used
+  { const u = new URL(req.url, 'http://relay');
+    if (u.pathname === '/reset-req' || u.pathname === '/reset-done') {
+      const id = u.searchParams.get('id'), r = resetReqs.get(id);
+      res.setHeader('Content-Type', 'application/json'); res.setHeader('Access-Control-Allow-Origin', '*'); res.setHeader('Cache-Control', 'no-store');
+      if (u.pathname === '/reset-req') return res.end(JSON.stringify(r ? { name: r.name, keyHash: r.keyHash, status: r.status, allowedAt: r.allowedAt || 0 } : null));
+      if (req.method !== 'POST') { res.statusCode = 405; return res.end('{}'); }
+      if (r) { const st = u.searchParams.get('status') === 'set' ? 'set' : 'done'; resetStatus(id, st); }
+      return res.end('{"ok":true}');
+    }
+  }
   if(new URL(req.url,'http://relay').pathname==='/rooms'){
     const live=[...rooms].filter(([,r])=>r.host?.readyState===1).map(([code,r])=>({code,host:r.info?.host||'Driver',map:r.info?.map||'unknown',mode:r.info?.mode||'free',players:r.info?.names?.length||r.clients.size,names:r.info?.names||[],updatedAt:r.info?.at||0}));
     res.writeHead(200,{...headers,'content-type':'application/json'});res.end(JSON.stringify({rooms:live,serverTime:Date.now()}));return;
@@ -164,7 +175,76 @@ function mailConnection(ws, q) {
   } else ws.close(4000, 'bad');
 }
 
+// ---- Chat Club forgot password, for when Firebase has run out for the day ----
+// Same idea as the Firebase version: someone leaves a request (their name and the SHA-256 of a secret their
+// browser keeps), huey's Chat Club gets it and answers Allow / Deny, and the asking browser then sends the new
+// password to Chat Club's /api/reset (which checks the request here, by its id, before changing anything).
+// Only huey's account can see the list or answer: it proves who it is with its Firebase login token.
+const resetReqs = new Map();                 // id -> { name, keyHash, status, createdAt, allowedAt, waiters: Set }
+const resetAdmins = new Set();
+const FIREBASE_PROJECT = 'school-chat-9e4d8', RESET_ADMIN = 'huey@chatclub.local';
+const EMULATOR_TOKENS = process.env.RESET_EMULATOR === '1'; // (local tests only: the emulator's tokens aren't signed)
+let googleCerts = { at: 0, keys: {} };
+async function adminFromToken(token) {
+  try {
+    const [h, p, sig] = String(token).split('.'); if (!h || !p) return false;
+    const head = JSON.parse(Buffer.from(h, 'base64url')), body = JSON.parse(Buffer.from(p, 'base64url')), now = Date.now() / 1000;
+    if (body.aud !== FIREBASE_PROJECT || body.iss !== 'https://securetoken.google.com/' + FIREBASE_PROJECT || !(body.exp > now) || body.email !== RESET_ADMIN) return false;
+    if (EMULATOR_TOKENS) return true;
+    if (head.alg !== 'RS256' || !sig) return false;
+    if (Date.now() - googleCerts.at > 3600e3 || !googleCerts.keys[head.kid]) {
+      const r = await fetch('https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com', { signal: AbortSignal.timeout(5000) });
+      googleCerts = { at: Date.now(), keys: await r.json() };
+    }
+    const cert = googleCerts.keys[head.kid]; if (!cert) return false;
+    return require('crypto').createVerify('RSA-SHA256').update(h + '.' + p).verify(cert, Buffer.from(sig, 'base64url'));
+  } catch (e) { return false; }
+}
+const resetView = (id, r) => ({ id, name: r.name, status: r.status, createdAt: r.createdAt });
+function resetStatus(id, status) {
+  const r = resetReqs.get(id); if (!r) return;
+  r.status = status; if (status === 'allowed') r.allowedAt = Date.now();
+  const out = JSON.stringify({ t: 'status', id, status });
+  for (const c of r.waiters) if (c.readyState === 1) c.send(out);
+  const card = JSON.stringify({ t: 'req', req: resetView(id, r) });
+  for (const c of resetAdmins) if (c.readyState === 1) c.send(card);
+  if (status === 'done') resetReqs.delete(id);
+}
+function tidyResets() { const old = Date.now() - 2 * 864e5; for (const [id, r] of resetReqs) if (r.createdAt < old) resetReqs.delete(id); }
+async function resetConnection(ws, q) {
+  ws.alive = true; ws.on('pong', () => { ws.alive = true; });
+  const role = q.get('role');
+  if (role === 'admin') {
+    ws.on('message', async (data) => {
+      let m; try { m = JSON.parse(String(data)); } catch (e) { return; }
+      if (m.t === 'login') {
+        if (!(await adminFromToken(m.token))) return ws.close(4003, 'not huey');
+        ws.isAdmin = true; resetAdmins.add(ws); tidyResets();
+        ws.send(JSON.stringify({ t: 'list', reqs: [...resetReqs].filter(([, r]) => r.status === 'pending').map(([id, r]) => resetView(id, r)) }));
+      } else if (m.t === 'answer' && ws.isAdmin && resetReqs.has(m.id) && (m.status === 'allowed' || m.status === 'denied')) resetStatus(m.id, m.status);
+    });
+    ws.on('close', () => resetAdmins.delete(ws));
+    return;
+  }
+  // the asking browser: makes a request (or picks its old one back up) and hears the answer
+  ws.on('message', (data) => {
+    let m; try { m = JSON.parse(String(data)); } catch (e) { return; }
+    if (m.t === 'ask' && typeof m.name === 'string' && m.name.trim() && m.name.length <= 24 && /^[0-9a-f]{64}$/.test(m.keyHash || '')) {
+      tidyResets(); if (resetReqs.size >= 300) return ws.close(4002, 'full');
+      const id = require('crypto').randomBytes(12).toString('hex'), r = { name: m.name.replace(/[\u0000-\u001f]/g, ''), keyHash: m.keyHash, status: 'pending', createdAt: Date.now(), waiters: new Set([ws]) };
+      resetReqs.set(id, r); ws.resetId = id;
+      ws.send(JSON.stringify({ t: 'asked', id }));
+      const card = JSON.stringify({ t: 'req', req: resetView(id, r) }); for (const c of resetAdmins) if (c.readyState === 1) c.send(card);
+    } else if (m.t === 'wait' && resetReqs.has(m.id)) {
+      const r = resetReqs.get(m.id); r.waiters.add(ws); ws.resetId = m.id;
+      ws.send(JSON.stringify({ t: 'status', id: m.id, status: r.status }));
+    } else if (m.t === 'wait') ws.send(JSON.stringify({ t: 'status', id: m.id, status: 'gone' }));
+  });
+  ws.on('close', () => { const r = resetReqs.get(ws.resetId); if (r) r.waiters.delete(ws); });
+}
+
 wss.on('connection', (ws, req) => {
+  if (new URL(req.url, 'http://x').pathname === '/reset') return resetConnection(ws, new URL(req.url, 'http://x').searchParams);
   if (new URL(req.url, 'http://x').pathname === '/mail') return mailConnection(ws, new URL(req.url, 'http://x').searchParams);
   if (new URL(req.url, 'http://x').pathname === '/watch') return watchConnection(ws, new URL(req.url, 'http://x').searchParams);
   if (new URL(req.url, 'http://x').pathname === '/chat') return chatConnection(ws, new URL(req.url, 'http://x').searchParams);
