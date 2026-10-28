@@ -202,12 +202,19 @@ async function offerUpdate() {
 app.on('quit', () => { if (installOnQuit) runInstaller(installOnQuit, false); });
 
 const boundsFile = () => path.join(app.getPath('userData'), 'window.json');
+// Where the window was last time, kept on the screen: if the screen got smaller (a lower
+// resolution, or a different monitor) the old size could hang off the edge and be cut
+// off. It opens maximized unless you last had it smaller.
 function savedBounds() {
-  try {
-    const b = JSON.parse(fs.readFileSync(boundsFile(), 'utf8'));
-    if (b.width >= 400 && b.height >= 400) return b;
-  } catch (e) { /* first run */ }
-  return { width: 1100, height: 760 };
+  const { screen } = require('electron');
+  let b = null;
+  try { b = JSON.parse(fs.readFileSync(boundsFile(), 'utf8')); } catch (e) { /* first run */ }
+  if (!b || !(b.width >= 400 && b.height >= 400)) b = { width: 1100, height: 760, maximized: true };
+  const area = (Number.isFinite(b.x) ? screen.getDisplayMatching({ x: b.x, y: b.y, width: b.width, height: b.height }) : screen.getPrimaryDisplay()).workArea;
+  const width = Math.min(b.width, area.width), height = Math.min(b.height, area.height);
+  const x = Number.isFinite(b.x) ? Math.min(Math.max(b.x, area.x), area.x + area.width - width) : undefined;
+  const y = Number.isFinite(b.y) ? Math.min(Math.max(b.y, area.y), area.y + area.height - height) : undefined;
+  return { width, height, ...(x !== undefined ? { x, y } : {}), maximized: b.maximized !== false };
 }
 
 function isSite(url) {
@@ -215,8 +222,9 @@ function isSite(url) {
 }
 
 function createWindow() {
+  const bounds = savedBounds();
   win = new BrowserWindow({
-    ...savedBounds(),
+    width: bounds.width, height: bounds.height, x: bounds.x, y: bounds.y,
     minWidth: 380,
     minHeight: 520,
     show: !SMOKE && !process.argv.includes('--hidden'),      // (started with Windows: wait quietly in the tray)
@@ -239,7 +247,7 @@ function createWindow() {
   });
 
   win.on('close', (event) => {
-    try { fs.writeFileSync(boundsFile(), JSON.stringify(win.getNormalBounds())); } catch (e) { /* not important */ }
+    try { fs.writeFileSync(boundsFile(), JSON.stringify({ ...win.getNormalBounds(), maximized: win.isMaximized() })); } catch (e) { /* not important */ }
     if (KEEP_IN_TRAY && !quitting && !SMOKE) {
       event.preventDefault(); win.hide();
       if (!toldAboutTray && tray) { toldAboutTray = true; tray.displayBalloon({ title: 'Chat Club is still running', content: "You'll still get message notifications. Right-click the icon by the clock to quit." }); }
@@ -257,6 +265,7 @@ function createWindow() {
       app.exit(1);
     });
   }
+  if (bounds.maximized && !SMOKE) win.maximize();
   win.loadURL(SITE);
 }
 
