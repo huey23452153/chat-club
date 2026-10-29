@@ -764,6 +764,7 @@
   .watch-panel{ border-bottom:1px solid var(--line); padding:10px 14px; display:flex; flex-direction:column; gap:8px; background: var(--surface); }
   .watch-player{ position:relative; width:100%; max-width:640px; margin:0 auto; aspect-ratio:16/9; max-height:38vh; background:#000; border-radius:12px; overflow:hidden; }
   .watch-player iframe, #ytPlayer{ position:absolute; inset:0; width:100%; height:100%; border:0; }
+  .watch-tap-hint{ position:absolute; left:50%; bottom:12px; transform:translateX(-50%); background:rgba(0,0,0,.75); color:#fff; padding:6px 12px; border-radius:20px; font-size:13px; pointer-events:none; white-space:nowrap; }
   .watch-empty{ position:absolute; inset:0; display:flex; align-items:center; justify-content:center; text-align:center; padding:12px; color:#ddd; font-size:14px; }
   .watch-now{ font-weight:800; font-size:14px; color: var(--ink); text-align:center; }
   .watch-row{ display:flex; gap:8px; justify-content:center; flex-wrap:wrap; }
@@ -1473,7 +1474,7 @@
           </div>
 
           <div class="watch-panel" id="watchPanel" style="display:none;">
-            <div class="watch-player"><div id="ytPlayer"></div><div class="watch-empty" id="watchEmpty">Nothing playing yet. Paste a YouTube link below.</div></div>
+            <div class="watch-player"><div id="ytPlayer"></div><div class="watch-empty" id="watchEmpty">Nothing playing yet. Paste a YouTube link below.</div><div class="watch-tap-hint" id="watchTapHint" style="display:none">▶️ Tap the video to start it</div></div>
             <div class="watch-now" id="watchNow"></div>
             <div class="watch-row">
               <input id="watchUrl" type="text" placeholder="Paste a YouTube link" maxlength="300" autocomplete="off" />
@@ -3186,7 +3187,7 @@
   // =========================================================================
   const WATCH_WS = (/^(localhost|127\.0\.0\.1)$/.test(location.hostname) && localStorage.getItem("chatclub_watch_ws")) || "wss://dust-crawler-relay.onrender.com/watch"; // (tests can point it at a local relay)
   let watchSocket = null, watchGroup = null, watchState = null, watchStateAt = 0, watchRetry = 0;
-  let ytPlayer = null, ytReady = false, ytLoading = null, ytVideo = null, ytQuietUntil = 0, ytSeekedAt = 0;
+  let ytVideoAt = 0, ytPlayer = null, ytReady = false, ytLoading = null, ytVideo = null, ytQuietUntil = 0, ytSeekedAt = 0;
   // the relay's clock compared with this device's (every device's clock is a bit off, so "where the
   // video is up to" is worked out on the relay's clock): best of a few round trips, the fastest one wins
   let watchClock = { offset: 0, rtt: Infinity }, watchPingTimer = null;
@@ -3266,11 +3267,16 @@
         onReady: () => { ytReady = true; syncPlayer(); },
         onStateChange: (e) => {
           const n = watchState?.now;
+          if(e.data === YT.PlayerState.PLAYING) ytPlayingSince = Date.now();
+          if(n && e.data === YT.PlayerState.ENDED) return void watchSend({ t: "ended", videoId: n.videoId });
           if(!n || Date.now() < ytQuietUntil) return; // our own change, not the person pressing anything
+          // Only pauses and plays the person really did go to everyone: a phone that won't start a video by itself
+          // (autoplay blocked), a hiccup or the video loading also show up as "paused", and those used to stop it for
+          // everybody. (Pressing anything in the player puts this page's focus in it.)
+          if(!touchedPlayer()) return;
           const cur = ytPlayer.getCurrentTime ? ytPlayer.getCurrentTime() : 0;
           if(e.data === YT.PlayerState.PAUSED && !n.paused) watchSend({ t: "pause", pos: cur });
           else if(e.data === YT.PlayerState.PLAYING && n.paused) watchSend({ t: "play", pos: cur });
-          else if(e.data === YT.PlayerState.ENDED) watchSend({ t: "ended", videoId: n.videoId });
         },
         onError: (e) => {
           const n = watchState?.now;
@@ -3283,13 +3289,18 @@
     });
   }
   function quiet(){ ytQuietUntil = Date.now() + 1200; }
+  let ytTouchedAt = 0, ytPlayingSince = 0, ytSeekGap = 0.3;
+  const ytIframe = () => { try{ return ytPlayer && ytPlayer.getIframe && ytPlayer.getIframe(); } catch(e){ return null; } };
+  // (a click or tap in the player moves the focus out of this page into it)
+  window.addEventListener("blur", () => setTimeout(() => { if(ytIframe() && document.activeElement === ytIframe()) ytTouchedAt = Date.now(); }, 0));
+  function touchedPlayer(){ return (ytIframe() && document.activeElement === ytIframe()) || Date.now() - ytTouchedAt < 4000; }
   function syncPlayer(){
     if(!ytPlayer || !ytReady || $("watchPanel").style.display === "none") return;
     const n = watchState?.now;
     if(!n){ if(ytVideo){ quiet(); ytPlayer.stopVideo(); ytVideo = null; } return; }
     const want = watchPos();
     if(ytVideo !== n.videoId){
-      quiet(); ytVideo = n.videoId;
+      quiet(); ytVideo = n.videoId; ytVideoAt = Date.now();
       if(n.paused) ytPlayer.cueVideoById({ videoId: n.videoId, startSeconds: want });
       else ytPlayer.loadVideoById({ videoId: n.videoId, startSeconds: want });
       return;
@@ -3300,11 +3311,18 @@
       if(Math.abs(cur - want) > 0.3){ quiet(); ytPlayer.seekTo(want, true); }
     } else {
       const off = cur - want, now = Date.now();
-      if(st === YT.PlayerState.PLAYING && Math.abs(off) > 0.25 && now - ytSeekedAt > 2500){
+      // Jump to where everyone is if it's drifted off. On a slow connection every jump means loading again, so it
+      // used to keep jumping and stuttering every few seconds: now each jump that didn't help (another one needed
+      // soon after) makes it put up with a bit more difference, and it gets fussy again once things settle.
+      if(now - ytSeekedAt > 30000) ytSeekGap = 0.3;
+      if(st === YT.PlayerState.PLAYING && now - ytPlayingSince > 1500 && Math.abs(off) > ytSeekGap && now - ytSeekedAt > 3000){
+        if(now - ytSeekedAt < 15000) ytSeekGap = Math.min(2, ytSeekGap * 1.6);
         quiet(); ytSeekedAt = now;
         ytPlayer.seekTo(want + 0.15, true); // (a jump takes a moment to start playing, so aim a little ahead)
       }
       if(st !== YT.PlayerState.PLAYING && st !== YT.PlayerState.BUFFERING){ quiet(); ytPlayer.playVideo(); }
+      // (a phone that won't start it by itself: say so, instead of looking stuck)
+      $("watchTapHint").style.display = st !== YT.PlayerState.PLAYING && st !== YT.PlayerState.BUFFERING && now - ytVideoAt > 4000 ? "" : "none";
     }
   }
   setInterval(syncPlayer, 250); // keep everyone lined up
