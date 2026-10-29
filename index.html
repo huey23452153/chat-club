@@ -1757,7 +1757,6 @@
   // =========================================================================
   //  SETTINGS
   // =========================================================================
-  const SEND_COOLDOWN_MS = 3000; // how long someone must wait between messages
 
   // STUN alone only works when both sides' NAT/firewall allows a direct
   // peer-to-peer route — that fails outright on stricter networks (common on
@@ -2841,6 +2840,7 @@
   // =========================================================================
   function listenToMyGroups(){
     let previousGroupIds = null;
+    const msgCounts = new Map(); // chat id -> its message count, last time we looked
     const q = query(collection(db, "groups"), where("memberIds", "array-contains", currentUser.uid));
     groupsUnsub = onSnapshot(q, (snap) => {
       myGroups = snap.docs.map(d => ({ id: d.id, ...d.data() }));
@@ -2849,9 +2849,12 @@
         if(ch.type !== "modified") continue;
         const g = ch.doc.data(), at = g.updatedAt?.toMillis?.() || 0;
         if(g.lastSenderId && g.lastSenderId !== currentUser.uid && ch.doc.id !== activeGroupId && at > lastReadHere(ch.doc.id) && at > (countedAt.get(ch.doc.id) || 0)){
-          countedAt.set(ch.doc.id, at); setLocalUnread(ch.doc.id, localUnread(ch.doc.id) + 1);
+          // (two messages close together can arrive as one change: the chat's message count says how many)
+          const before = msgCounts.get(ch.doc.id), delta = Number.isFinite(g.msgCount) && Number.isFinite(before) && g.msgCount > before ? g.msgCount - before : 1;
+          countedAt.set(ch.doc.id, at); setLocalUnread(ch.doc.id, localUnread(ch.doc.id) + Math.min(delta, 99));
         }
       }
+      for(const d of snap.docs) if(Number.isFinite(d.data().msgCount)) msgCounts.set(d.id, d.data().msgCount);
       // the chats you pinned first, then whichever was last active
       myGroups.sort((a,b) => (isPinnedChat(b) - isPinnedChat(a))
         || ((b.updatedAt?.toMillis?.() || 0) - (a.updatedAt?.toMillis?.() || 0)));
@@ -3047,13 +3050,14 @@
     const updated = g.updatedAt?.toMillis ? g.updatedAt.toMillis() : 0;
     if(!updated || g.lastSenderId === currentUser.uid) return 0;
     const read = lastReadHere(g.id);
-    if(!read){ try{ localStorage.setItem(readKey(g.id), String(Date.now())); } catch(e){} return 0; } // (new device: start from now)
+    // (new device: start from the chat's last message, so anything newer counts, even one that comes straight after)
+    if(!read){ try{ localStorage.setItem(readKey(g.id), String(updated - 1000)); } catch(e){} return 0; }
     return updated > read + 1000 ? Math.max(1, localUnread(g.id)) : 0;
   }
 
   // The group-doc update that goes with sending a message
   function unreadBump(groupId){
-    return { updatedAt: serverTimestamp(), lastSenderId: currentUser.uid };
+    return { updatedAt: serverTimestamp(), lastSenderId: currentUser.uid, msgCount: increment(1) };
   }
 
   // The number on the installed app's icon
@@ -4387,19 +4391,21 @@
     pendingGifUrl = null;
     if((!text && !imageDataUrl && !gifUrl) || !activeGroupId) return;
 
-    const sinceLast = Date.now() - lastSentAt;
-    if(sinceLast < SEND_COOLDOWN_MS){
+    // No waiting between messages any more, but no spamming: not the same message over and over, not keyboard
+    // mashing, and not a flood of them all at once
+    const why = spamCheck(text);
+    if(why){
+      composerHint.textContent = why;
       composerHint.classList.add("show");
-      setTimeout(() => composerHint.classList.remove("show"), 1500);
+      clearTimeout(composerHint._t); composerHint._t = setTimeout(() => composerHint.classList.remove("show"), 2500);
       return;
     }
-
     lastSentAt = Date.now();
+    recentSends.push({ at: lastSentAt, text: text.toLowerCase().replace(/\s+/g, " ") });
     messageInput.value = "";
     messageInput.style.height = "auto";
     clearPendingImage();
     stopTyping();
-    startCooldownVisual();
     sendBtn.classList.add("just-sent");
     setTimeout(() => sendBtn.classList.remove("just-sent"), 350);
 
@@ -4452,13 +4458,29 @@
     }
   }
 
-  function startCooldownVisual(){
-    sendBtn.disabled = true;
-    sendBtn.classList.add("cooling");
-    setTimeout(() => {
-      sendBtn.disabled = false;
-      sendBtn.classList.remove("cooling");
-    }, SEND_COOLDOWN_MS);
+  let recentSends = []; // { at, text } of what I sent in the last minute
+  function looksLikeMashing(text){
+    // words of 10+ letters with hardly any vowels ("asdfghjkl"), a 25+ letter non-word, or one key held down for 30+
+    // (a stretched "nooooooo" is fine)
+    const words = text.toLowerCase().match(/[a-z]+/g) || [];
+    let letters = 0, mashed = 0;
+    for(const w of words){
+      letters += w.length;
+      if(/^(h[aeiou])+h?$/.test(w) || /^(lo)+l$/.test(w) || /^l+o+l+$/.test(w) || /^lmf?a+o+$/.test(w)) continue; // laughing's fine
+      const squashed = w.replace(/(.)\1{2,}/g, "$1"), vowels = (squashed.match(/[aeiouy]/g) || []).length; // ("yessss" is just "yes")
+      if((squashed.length >= 10 && vowels / squashed.length < 0.2) || (w.length >= 25 && !/(.)\1{4,}/.test(w))) mashed += w.length;
+    }
+    const noUrls = text.replace(/https?:\/\/\S+/g, "");
+    return (letters >= 10 && mashed / letters > 0.5) || /(.)\1{29,}/.test(noUrls);
+  }
+  function spamCheck(text){
+    const now = Date.now();
+    recentSends = recentSends.filter(x => now - x.at < 60000);
+    if(recentSends.filter(x => now - x.at < 5000).length >= 6) return "Woah, that's a lot of messages at once. Wait a few seconds 🙂";
+    const t = text.toLowerCase().replace(/\s+/g, " ");
+    if(t && recentSends.filter(x => x.text === t).length >= 2) return "You've already sent that a few times. Try saying something new 🙂";
+    if(t && looksLikeMashing(text)) return "That looks like keyboard mashing, so it wasn't sent 🙂";
+    return null;
   }
 
   // =========================================================================
