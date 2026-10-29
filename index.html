@@ -1556,6 +1556,10 @@
       <button class="big-btn secondary" data-close="renameModal">Cancel</button>
       <button class="big-btn" id="saveRenameBtn">Save name</button>
     </div>
+    <!-- the owner can delete the whole chat; anyone else can leave it (tap twice to be sure) -->
+    <div class="modal-actions" style="margin-top:14px">
+      <button class="big-btn secondary" id="deleteChatBtn" style="color:#c0392b"></button>
+    </div>
   </div>
 </div>
 
@@ -2859,7 +2863,8 @@
             $("sidebar").classList.remove("hide-mobile");
             $("mainPanel").classList.remove("show-mobile");
           }
-          showToast("Removed from chat", "You're no longer a member of that group.");
+          if(id === leavingGroupId) leavingGroupId = null;
+          else showToast("Removed from chat", "You're no longer a member of that group.");
         }
       }
       previousGroupIds = currentGroupIds;
@@ -2910,12 +2915,17 @@
   // Firebase can run out of reads but still take writes: messages then save, nobody sees them, and nothing
   // errors to notice it by. So ask Firebase directly now and then (a 429 answer means it's out for the day).
   async function firebaseReadsOut(){
-    try{ const r = await fetch("https://firestore.googleapis.com/v1/projects/school-chat-9e4d8/databases/(default)/documents/groups/x", { cache: "no-store" }); return r.status === 429; }
-    catch(e){ return false; }
+    try{ const r = await fetch("https://firestore.googleapis.com/v1/projects/school-chat-9e4d8/databases/(default)/documents/groups/x", { cache: "no-store" }); return r.status === 429 ? true : r.status === 403 || r.ok ? false : null; }
+    catch(e){ return null; } // (no answer at all: don't know)
   }
   async function checkFirebase(){
-    if(!currentUser || backupMode || /^(localhost|127\.0\.0\.1)$/.test(location.hostname)) return;
-    if(await firebaseReadsOut()) enterBackupMode();
+    if(!currentUser || /^(localhost|127\.0\.0\.1)$/.test(location.hostname)) return;
+    const out = await firebaseReadsOut();
+    if(out && !backupMode) enterBackupMode();
+    // Firebase is back: go back to normal. (Simplest and surest is opening the app again, but not in the
+    // middle of a call or with something half typed: then the next check tries again.)
+    else if(out === false && backupMode && !new URLSearchParams(location.search).has("backup")
+      && !activeCallGroupId && !messageInput.value.trim()) location.reload();
   }
   setInterval(checkFirebase, 5 * 60000); // (each check can count as one read, so not too often)
   $("backupBanner").addEventListener("click", () => $("backupBanner").classList.toggle("small"));
@@ -3995,6 +4005,8 @@
     const g = myGroups.find(g => g.id === activeGroupId);
     $("renameInput").value = g ? g.name : "";
     $("renameMsg").classList.remove("show");
+    const del = $("deleteChatBtn"); delete del.dataset.armed;
+    del.textContent = g && g.ownerId === currentUser.uid ? "🗑️ Delete this chat for everyone" : "🚪 Leave this chat";
     openModal("renameModal");
   });
   $("saveRenameBtn").addEventListener("click", async () => {
@@ -4007,6 +4019,31 @@
       closeModal("renameModal");
     } catch(err){
       msgEl.textContent = "Couldn't rename the group. Please try again.";
+      msgEl.classList.add("show");
+    }
+  });
+
+  let leavingGroupId = null; // (so leaving doesn't also say "you were removed")
+  $("deleteChatBtn").addEventListener("click", async () => {
+    const btn = $("deleteChatBtn"), g = myGroups.find(g => g.id === activeGroupId), msgEl = $("renameMsg");
+    if(!g) return;
+    const owner = g.ownerId === currentUser.uid;
+    if(!btn.dataset.armed){
+      btn.dataset.armed = "1"; btn.textContent = owner ? "Tap again to delete it for everyone" : "Tap again to leave";
+      setTimeout(() => { if(btn.dataset.armed){ delete btn.dataset.armed; btn.textContent = owner ? "🗑️ Delete this chat for everyone" : "🚪 Leave this chat"; } }, 4000);
+      return;
+    }
+    delete btn.dataset.armed;
+    if(backupMode){ msgEl.textContent = "That needs Firebase, which has run out for today. Try again later."; msgEl.classList.add("show"); return; }
+    try{
+      leavingGroupId = g.id;
+      if(owner) await deleteDoc(doc(db, "groups", g.id));
+      else await updateDoc(doc(db, "groups", g.id), { memberIds: arrayRemove(currentUser.uid), [`memberNames.${currentUser.uid}`]: deleteField() });
+      closeModal("renameModal");
+      showToast("Chat Club", owner ? `Deleted "${g.name}".` : `You left "${g.name}".`);
+    } catch(err){
+      leavingGroupId = null;
+      msgEl.textContent = owner ? "Couldn't delete the chat. Please try again." : "Couldn't leave the chat. Please try again.";
       msgEl.classList.add("show");
     }
   });
