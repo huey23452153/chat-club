@@ -1721,7 +1721,7 @@
   import {
     getFirestore, doc, setDoc, getDoc, getDocFromServer, getDocs, getDocsFromCache, collection, addDoc, updateDoc, deleteDoc,
     query, where, orderBy, limitToLast, endBefore, onSnapshot, serverTimestamp, arrayUnion, arrayRemove, deleteField, increment,
-    connectFirestoreEmulator, initializeFirestore, persistentLocalCache, persistentSingleTabManager
+    connectFirestoreEmulator, initializeFirestore, persistentLocalCache, persistentMultipleTabManager
   } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
 
   const firebaseConfig = {
@@ -1738,7 +1738,7 @@
   // (saved on this device: opening the app again, or a chat again, then only downloads what changed since,
   // instead of every chat, friend and message all over again, which is what kept using up the free limit)
   let db;
-  try{ db = initializeFirestore(app, { localCache: persistentLocalCache({ tabManager: persistentSingleTabManager() }) }); }
+  try{ db = initializeFirestore(app, { localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }) }); }
   catch(e){ db = getFirestore(app); }
 
   // Automated tests run this app from localhost against Firebase's local
@@ -4318,8 +4318,19 @@
           text: replySnapshot.text.slice(0, 120)
         };
       }
-      await addDoc(collection(db, "groups", activeGroupId, "messages"), payload);
-      await updateDoc(doc(db, "groups", activeGroupId), unreadBump(activeGroupId));
+      // (when Firebase has run out it doesn't say so, it just never finishes: after 8 seconds, check, and if
+      // it's out send it on the backup chat instead)
+      const groupId = activeGroupId;
+      let slow = setTimeout(async () => {
+        slow = null;
+        if(backupMode || !(await firebaseReadsOut())) return;
+        enterBackupMode();
+        if(text || gifUrl || imageDataUrl) setTimeout(() => sendBackup(text ? applyWordSwaps(text.slice(0, 500)) : "", gifUrl, imageDataUrl || undefined), 2500);
+      }, 8000);
+      try{
+        await addDoc(collection(db, "groups", groupId, "messages"), payload);
+        await updateDoc(doc(db, "groups", groupId), unreadBump(groupId));
+      } finally { if(slow) clearTimeout(slow); }
     } catch(err){
       // the free limit ran out: switch to the backup chat and send it there instead
       if(isQuotaError(err)){ enterBackupMode(); if(text || gifUrl || imageDataUrl) setTimeout(() => sendBackup(text ? applyWordSwaps(text.slice(0, 500)) : "", gifUrl, imageDataUrl || undefined), 2500); return; }
