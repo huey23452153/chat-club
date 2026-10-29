@@ -15,7 +15,14 @@ module.exports = async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     res.end(JSON.stringify(body));
   };
-  // Metered's free plan (no card): METERED_APP (the name in yourname.metered.live) and METERED_API_KEY
+  // Metered's free plan, with the username and password of one credential from its dashboard
+  // (TURN Server → Credentials): TURN_USERNAME and TURN_PASSWORD
+  const user = process.env.TURN_USERNAME, pass = process.env.TURN_PASSWORD;
+  if (user && pass) {
+    const urls = ['turn:global.relay.metered.ca:80', 'turn:global.relay.metered.ca:80?transport=tcp', 'turn:global.relay.metered.ca:443', 'turns:global.relay.metered.ca:443?transport=tcp'];
+    return send({ iceServers: STUN.concat(urls.map((u) => ({ urls: u, username: user, credential: pass }))), turn: true });
+  }
+  // or (older Metered dashboards): METERED_APP (the name in yourname.metered.live) and METERED_API_KEY
   const app = process.env.METERED_APP, key = process.env.METERED_API_KEY;
   if (app && key) {
     try {
