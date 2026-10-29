@@ -2892,6 +2892,12 @@
     setTimeout(() => $("backupBanner").classList.add("small"), 8000);
     connectBackup();
     if(activeGroupId) showBackupChat(activeGroupId);
+    // calls connect through the relay now too: listen to the open chat's call there
+    if(activeGroupId && !activeCallGroupId){
+      const g = activeGroupId;
+      if(callUnsub) callUnsub();
+      callUnsub = callListen(g, (snap) => handleCallDocChange(g, snap.exists() ? snap.data() : null));
+    }
   }
   // Firebase can run out of reads but still take writes: messages then save, nobody sees them, and nothing
   // errors to notice it by. So ask Firebase directly now and then (a 429 answer means it's out for the day).
@@ -3332,6 +3338,9 @@
     if(backupMode){
       if(messagesUnsub) messagesUnsub(); messagesUnsub = null;
       showBackupChat(groupId);
+      presenceSend({ t: "seen-get", g: groupId });
+      if(callUnsub) callUnsub();
+      callUnsub = callListen(groupId, (snap) => handleCallDocChange(groupId, snap.exists() ? snap.data() : null));
       return;
     }
     if(messagesUnsub) messagesUnsub();
@@ -3368,7 +3377,7 @@
     presenceSend({ t: "seen-get", g: groupId });
 
     if(callUnsub) callUnsub();
-    callUnsub = onSnapshot(callDocRef(groupId), (snap) => {
+    callUnsub = callListen(groupId, (snap) => {
       handleCallDocChange(groupId, snap.exists() ? snap.data() : null);
     });
   }
@@ -4363,6 +4372,62 @@
   //  participant.
   // =========================================================================
   function callDocRef(groupId){ return doc(db, "groups", groupId, "calls", "current"); }
+  // When Firebase has run out for the day (backupMode), the call document lives on the relay instead (see
+  // callConnection in relay/server.js): same shape and same updates, so the rest of the call code doesn't change.
+  // These pick the right place each time; cf.* are the special values (the time now, remove, add to a list).
+  const CALL_WS = (/^(localhost|127\.0\.0\.1)$/.test(location.hostname) && localStorage.getItem("chatclub_call_ws")) || "wss://dust-crawler-relay.onrender.com/call";
+  const cf = {
+    now: () => backupMode ? { $: "now" } : serverTimestamp(),
+    del: () => backupMode ? { $: "del" } : deleteField(),
+    union: (x) => backupMode ? { $: "union", v: [x] } : arrayUnion(x)
+  };
+  let callSock = null, callSockOpen = null, callRid = 0;
+  const callWaits = new Map(), callListeners = new Map(); // request id -> answer; groupId -> Set of callbacks
+  const relayTimes = (v) => v && typeof v === "object" ? (typeof v.$ts === "number" ? { toMillis: () => v.$ts, toDate: () => new Date(v.$ts) }
+    : Array.isArray(v) ? v.map(relayTimes) : Object.fromEntries(Object.entries(v).map(([k, x]) => [k, relayTimes(x)]))) : v;
+  const callSnap = (data) => ({ exists: () => !!data, data: () => relayTimes(data) });
+  function callSocket(){
+    if(callSockOpen) return callSockOpen;
+    callSockOpen = new Promise((ok, no) => {
+      let ws; try{ ws = new WebSocket(CALL_WS + "?uid=" + encodeURIComponent(currentUser.uid)); } catch(e){ callSockOpen = null; return no(e); }
+      const give = setTimeout(() => { try{ ws.close(); } catch(e){} }, 70000); // (the free server can take a minute to wake up)
+      ws.onopen = () => { clearTimeout(give); callSock = ws; for(const g of callListeners.keys()) ws.send(JSON.stringify({ t: "sub", g })); ok(ws); };
+      ws.onmessage = (e) => {
+        let m; try{ m = JSON.parse(e.data); } catch(err){ return; }
+        if(m.t === "doc") for(const cb of callListeners.get(m.g) || []) cb(callSnap(m.data));
+        else if(m.rid && callWaits.has(m.rid)){ callWaits.get(m.rid)(m); callWaits.delete(m.rid); }
+      };
+      ws.onclose = () => {
+        clearTimeout(give);
+        const was = callSock === ws; callSock = null; callSockOpen = null;
+        for(const done of callWaits.values()) done({ error: "closed" }); callWaits.clear();
+        if(!was) no(new Error("closed"));
+        else if(callListeners.size && currentUser) setTimeout(() => callSocket().catch(() => {}), 2000); // (reconnect: the listeners sign up again)
+      };
+    });
+    return callSockOpen;
+  }
+  async function callAsk(msg){
+    const ws = await callSocket(), rid = "r" + (++callRid);
+    return new Promise((ok, no) => {
+      const t = setTimeout(() => { callWaits.delete(rid); no(new Error("The call server didn't answer. Try again.")); }, 15000);
+      callWaits.set(rid, (m) => { clearTimeout(t); if(m.error){ const e = new Error(m.error); e.code = m.error; no(e); } else ok(m); });
+      ws.send(JSON.stringify({ ...msg, rid }));
+    });
+  }
+  async function callGet(groupId){ return backupMode ? callSnap((await callAsk({ t: "get", g: groupId })).data) : getDoc(callDocRef(groupId)); }
+  async function callSet(groupId, data){ if(backupMode) await callAsk({ t: "set", g: groupId, data }); else await setDoc(callDocRef(groupId), data); }
+  async function callUpdate(groupId, update){ if(backupMode) await callAsk({ t: "upd", g: groupId, data: update }); else await updateDoc(callDocRef(groupId), update); }
+  function callListen(groupId, cb){
+    if(!backupMode) return onSnapshot(callDocRef(groupId), cb, () => {});
+    let set = callListeners.get(groupId); if(!set) callListeners.set(groupId, set = new Set());
+    set.add(cb);
+    callSocket().then((ws) => ws.send(JSON.stringify({ t: "sub", g: groupId }))).catch(() => {});
+    return () => {
+      set.delete(cb);
+      if(!set.size){ callListeners.delete(groupId); if(callSock && callSock.readyState === 1) callSock.send(JSON.stringify({ t: "unsub", g: groupId })); }
+    };
+  }
 
   // Asks for the camera and mic, but a missing or blocked device doesn't
   // stop anyone joining: they get whichever of the two works (possibly
@@ -4870,7 +4935,7 @@
     // mesh calling (no media server) only holds up to MAX_CALL_PARTICIPANTS
     // people, so a late joiner should get turned away cleanly instead of
     // grabbing their camera for nothing or squeezing into an already-full call.
-    const preCheckSnap = await getDoc(callDocRef(groupId));
+    const preCheckSnap = await callGet(groupId);
     if(preCheckSnap.exists()){
       const liveNow = getLiveParticipants(preCheckSnap.data().participants);
       if(!(currentUser.uid in liveNow) && Object.keys(liveNow).length >= MAX_CALL_PARTICIPANTS){
@@ -4906,18 +4971,18 @@
       // else's still-live entries.
       const update = {
         status: "active",
-        [`participants.${currentUser.uid}`]: { name: currentUser.displayName, lastSeen: serverTimestamp() },
-        updatedAt: serverTimestamp()
+        [`participants.${currentUser.uid}`]: { name: currentUser.displayName, lastSeen: cf.now() },
+        updatedAt: cf.now()
       };
-      for(const key of myStaleKeys) update[`peers.${key}`] = deleteField();
-      await updateDoc(callDocRef(groupId), update);
+      for(const key of myStaleKeys) update[`peers.${key}`] = cf.del();
+      await callUpdate(groupId, update);
     } else {
       // First-ever call in this group — nothing to clean up, and updateDoc
       // would fail on a document that doesn't exist yet.
-      await setDoc(callDocRef(groupId), {
+      await callSet(groupId, {
         status: "active",
-        participants: { [currentUser.uid]: { name: currentUser.displayName, lastSeen: serverTimestamp() } },
-        updatedAt: serverTimestamp()
+        participants: { [currentUser.uid]: { name: currentUser.displayName, lastSeen: cf.now() } },
+        updatedAt: cf.now()
       });
     }
     // Only mark ourselves "in the call" once the write actually commits —
@@ -4934,7 +4999,7 @@
     // so if that were the only listener, switching chats mid-call would
     // silently stop you from ever hearing about new joiners again.
     if(activeCallUnsub) activeCallUnsub();
-    activeCallUnsub = onSnapshot(callDocRef(groupId), (snap) => {
+    activeCallUnsub = callListen(groupId, (snap) => {
       handleCallDocChange(groupId, snap.exists() ? snap.data() : null);
     });
 
@@ -4945,8 +5010,8 @@
     // whether their own client ever gets a chance to clean up after itself.
     if(callHeartbeatInterval) clearInterval(callHeartbeatInterval);
     callHeartbeatInterval = setInterval(() => {
-      updateDoc(callDocRef(groupId), {
-        [`participants.${currentUser.uid}.lastSeen`]: serverTimestamp()
+      callUpdate(groupId, {
+        [`participants.${currentUser.uid}.lastSeen`]: cf.now()
       }).catch(()=>{});
     }, CALL_HEARTBEAT_MS);
   }
@@ -5019,14 +5084,14 @@
     const key = `${currentUser.uid}_${otherUid}`;
     pc.onicecandidate = (e) => {
       if(e.candidate){
-        updateDoc(callDocRef(groupId), {
-          [`peers.${key}.offererCandidates`]: arrayUnion(e.candidate.toJSON())
+        callUpdate(groupId, {
+          [`peers.${key}.offererCandidates`]: cf.union(e.candidate.toJSON())
         }).catch(()=>{});
       }
     };
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
-    await updateDoc(callDocRef(groupId), {
+    await callUpdate(groupId, {
       [`peers.${key}`]: {
         fromUid: currentUser.uid, fromName: currentUser.displayName, toUid: otherUid,
         offer: { sdp: offer.sdp, type: offer.type },
@@ -5044,8 +5109,8 @@
     const key = `${otherUid}_${currentUser.uid}`;
     pc.onicecandidate = (e) => {
       if(e.candidate){
-        updateDoc(callDocRef(groupId), {
-          [`peers.${key}.answererCandidates`]: arrayUnion(e.candidate.toJSON())
+        callUpdate(groupId, {
+          [`peers.${key}.answererCandidates`]: cf.union(e.candidate.toJSON())
         }).catch(()=>{});
       }
     };
@@ -5060,7 +5125,7 @@
     }
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
-    await updateDoc(callDocRef(groupId), {
+    await callUpdate(groupId, {
       [`peers.${key}.answer`]: { sdp: answer.sdp, type: answer.type }
     });
   }
@@ -5585,9 +5650,9 @@
     const wasAlone = peerConnections.size === 0;
     if(groupId){
       try{
-        const update = { [`participants.${currentUser.uid}`]: deleteField(), updatedAt: serverTimestamp() };
+        const update = { [`participants.${currentUser.uid}`]: cf.del(), updatedAt: cf.now() };
         if(wasAlone) update.peers = {}; // last one out resets signaling data for the next call
-        await updateDoc(callDocRef(groupId), update);
+        await callUpdate(groupId, update);
       } catch(e){}
     }
     endCallLocally();

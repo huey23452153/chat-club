@@ -63,6 +63,55 @@ function presenceConnection(ws, q) {
   ws.on('close', () => { const set = presence.get(uid); if (!set) return; set.delete(ws); if (!set.size) { presence.delete(uid); tellWatchers(uid); } });
 }
 
+// CHAT CLUB BACKUP CALLS: video calls connect people through a small "call document" per chat (who's in it, and the
+// offers/answers/connection details between each pair). When Firebase has run out for the day the app keeps that
+// document here instead: same shape, same updates ("a.b.c" paths; {$:'now'} = the time, {$:'del'} = remove,
+// {$:'union', v:[…]} = add to a list), and everyone in that chat's call gets the whole document whenever it changes.
+// Only in memory, and forgotten after 6 hours without changes. (The video itself goes directly between people.)
+const callDocs = new Map();                  // groupId -> { data: object|null, subs: Set<socket>, at }
+const callOf = (g) => { let c = callDocs.get(g); if (!c) { c = { data: null, subs: new Set(), at: Date.now() }; callDocs.set(g, c); } return c; };
+const BAD_KEY = /^(__proto__|constructor|prototype)$/;
+function callValue(v) {
+  if (v && typeof v === 'object' && !Array.isArray(v)) {
+    if (v.$ === 'now') return { $ts: Date.now() };
+    const out = {}; for (const [k, x] of Object.entries(v)) if (!BAD_KEY.test(k) && !(x && x.$ === 'del')) out[k] = callValue(x); return out;
+  }
+  return Array.isArray(v) ? v.map(callValue) : v;
+}
+function callUpdate(doc, update) {
+  for (const [path, v] of Object.entries(update)) {
+    const parts = path.split('.'); if (parts.some((k) => !k || BAD_KEY.test(k)) || parts.length > 5) continue;
+    let o = doc; for (const k of parts.slice(0, -1)) { if (!o[k] || typeof o[k] !== 'object' || Array.isArray(o[k])) o[k] = {}; o = o[k]; }
+    const last = parts[parts.length - 1];
+    if (v && v.$ === 'del') delete o[last];
+    else if (v && v.$ === 'union' && Array.isArray(v.v)) { const list = Array.isArray(o[last]) ? o[last] : (o[last] = []); for (const x of v.v) if (!list.some((y) => JSON.stringify(y) === JSON.stringify(x)) && list.length < 200) list.push(callValue(x)); }
+    else o[last] = callValue(v);
+  }
+}
+function callConnection(ws, q) {
+  if (!okUid(q.get('uid'))) return ws.close(4000, 'bad');
+  ws.alive = true; ws.on('pong', () => { ws.alive = true; }); ws.callGroups = new Set();
+  const show = (g, c, to) => { const out = JSON.stringify({ t: 'doc', g, data: c.data }); for (const sub of to) if (sub.readyState === 1) sub.send(out); };
+  ws.on('message', (data) => {
+    if (data.length > 200000) return;
+    let m; try { m = JSON.parse(String(data)); } catch (e) { return; }
+    if (!okGroup(m.g)) return;
+    const c = callOf(m.g);
+    if (m.t === 'sub') { if (ws.callGroups.size < 20) { ws.callGroups.add(m.g); c.subs.add(ws); } show(m.g, c, [ws]); }
+    else if (m.t === 'unsub') { ws.callGroups.delete(m.g); c.subs.delete(ws); }
+    else if (m.t === 'get') ws.send(JSON.stringify({ t: 'got', rid: m.rid, data: c.data }));
+    else if ((m.t === 'set' || m.t === 'upd') && m.data && typeof m.data === 'object') {
+      if (m.t === 'set') c.data = callValue(m.data);
+      else { if (!c.data) { if (m.rid) ws.send(JSON.stringify({ t: 'done', rid: m.rid, error: 'not-found' })); return; } callUpdate(c.data, m.data); }
+      c.at = Date.now();
+      if (m.rid) ws.send(JSON.stringify({ t: 'done', rid: m.rid }));
+      show(m.g, c, c.subs);
+    }
+  });
+  ws.on('close', () => { for (const g of ws.callGroups) { const c = callDocs.get(g); if (c) c.subs.delete(ws); } });
+}
+setInterval(() => { const old = Date.now() - 6 * 3600e3; for (const [g, c] of callDocs) if (!c.subs.size && c.at < old) callDocs.delete(g); }, 600e3);
+
 // CHAT CLUB BACKUP CHAT: when Chat Club's Firebase runs out of its free daily limit, the app switches here. Each
 // chat (by its id) keeps its last 200 messages for 12 hours in memory (gone if the server restarts), and new
 // messages go straight to everyone in that chat who's connected. Text and GIPHY GIFs only (no photos).
@@ -259,6 +308,7 @@ wss.on('connection', (ws, req) => {
   if (new URL(req.url, 'http://x').pathname === '/mail') return mailConnection(ws, new URL(req.url, 'http://x').searchParams);
   if (new URL(req.url, 'http://x').pathname === '/watch') return watchConnection(ws, new URL(req.url, 'http://x').searchParams);
   if (new URL(req.url, 'http://x').pathname === '/chat') return chatConnection(ws, new URL(req.url, 'http://x').searchParams);
+  if (new URL(req.url, 'http://x').pathname === '/call') return callConnection(ws, new URL(req.url, 'http://x').searchParams);
   if (new URL(req.url, 'http://x').pathname === '/presence') return presenceConnection(ws, new URL(req.url, 'http://x').searchParams);
   const q = new URL(req.url, 'http://x').searchParams, code = String(q.get('room') || '').toUpperCase(), role = q.get('role'), id = q.get('id');
   if (!ok(code) || !okId(id) || (role !== 'host' && role !== 'join')) return ws.close(4000, 'bad');
