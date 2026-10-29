@@ -501,7 +501,7 @@
   /* profile pictures */
   .avatar.has-photo{ background-size:cover !important; background-position:center !important; color:transparent; }
   .msg-who{ display:flex; align-items:center; gap:6px; }
-  .msg-pfp{ width:22px; height:22px; border-radius:50%; background-size:cover; background-position:center; flex-shrink:0; }
+  .msg-pfp{ width:22px; height:22px; border-radius:50%; background-size:cover; background-position:center; flex-shrink:0; cursor:zoom-in; }
   .pfp-preview{ width:64px; height:64px; border-radius:50%; background:var(--teal) center/cover; display:inline-block; vertical-align:middle; margin-right:10px; }
 
   .poll-option-row{ display:flex; gap:8px; margin-bottom:8px; align-items:center; }
@@ -1556,9 +1556,9 @@
       <button class="big-btn secondary" data-close="renameModal">Cancel</button>
       <button class="big-btn" id="saveRenameBtn">Save name</button>
     </div>
-    <!-- the owner can delete the whole chat; anyone else can leave it (tap twice to be sure) -->
-    <div class="modal-actions" style="margin-top:14px">
-      <button class="big-btn secondary" id="deleteChatBtn" style="color:#c0392b"></button>
+    <!-- the owner deletes the whole chat with 🗑️ Delete at the top; anyone else can leave it here (tap twice to be sure) -->
+    <div class="modal-actions" id="leaveChatRow" style="margin-top:14px">
+      <button class="big-btn secondary" id="leaveChatBtn" style="color:#c0392b">🚪 Leave this chat</button>
     </div>
   </div>
 </div>
@@ -2767,7 +2767,11 @@
   document.addEventListener("keydown", (e) => { if(e.key === "Escape" && $("imageViewer").classList.contains("show")) closeImageViewer(); });
   document.addEventListener("click", (e) => {
     const img = e.target.closest && e.target.closest(".bubble img.msg-image");
-    if(img && !e.target.closest("a")){ e.preventDefault(); openImageViewer(img.src); }
+    if(img && !e.target.closest("a")){ e.preventDefault(); openImageViewer(img.src); return; }
+    // someone's profile picture next to their name: that full screen too
+    const pfp = e.target.closest && e.target.closest(".msg-pfp");
+    const url = pfp && (getComputedStyle(pfp).backgroundImage.match(/^url\("?(.*?)"?\)$/) || [])[1];
+    if(url && isValidPfp(url)){ e.preventDefault(); openImageViewer(url); }
   });
 
   function watchPresenceOf(uids){
@@ -4005,8 +4009,8 @@
     const g = myGroups.find(g => g.id === activeGroupId);
     $("renameInput").value = g ? g.name : "";
     $("renameMsg").classList.remove("show");
-    const del = $("deleteChatBtn"); delete del.dataset.armed;
-    del.textContent = g && g.ownerId === currentUser.uid ? "🗑️ Delete this chat for everyone" : "🚪 Leave this chat";
+    const leave = $("leaveChatBtn"); delete leave.dataset.armed; leave.textContent = "🚪 Leave this chat";
+    $("leaveChatRow").style.display = g && g.ownerId !== currentUser.uid ? "" : "none";
     openModal("renameModal");
   });
   $("saveRenameBtn").addEventListener("click", async () => {
@@ -4024,26 +4028,24 @@
   });
 
   let leavingGroupId = null; // (so leaving doesn't also say "you were removed")
-  $("deleteChatBtn").addEventListener("click", async () => {
-    const btn = $("deleteChatBtn"), g = myGroups.find(g => g.id === activeGroupId), msgEl = $("renameMsg");
+  $("leaveChatBtn").addEventListener("click", async () => {
+    const btn = $("leaveChatBtn"), g = myGroups.find(g => g.id === activeGroupId), msgEl = $("renameMsg");
     if(!g) return;
-    const owner = g.ownerId === currentUser.uid;
     if(!btn.dataset.armed){
-      btn.dataset.armed = "1"; btn.textContent = owner ? "Tap again to delete it for everyone" : "Tap again to leave";
-      setTimeout(() => { if(btn.dataset.armed){ delete btn.dataset.armed; btn.textContent = owner ? "🗑️ Delete this chat for everyone" : "🚪 Leave this chat"; } }, 4000);
+      btn.dataset.armed = "1"; btn.textContent = "Tap again to leave";
+      setTimeout(() => { if(btn.dataset.armed){ delete btn.dataset.armed; btn.textContent = "🚪 Leave this chat"; } }, 4000);
       return;
     }
     delete btn.dataset.armed;
     if(backupMode){ msgEl.textContent = "That needs Firebase, which has run out for today. Try again later."; msgEl.classList.add("show"); return; }
     try{
       leavingGroupId = g.id;
-      if(owner) await deleteDoc(doc(db, "groups", g.id));
-      else await updateDoc(doc(db, "groups", g.id), { memberIds: arrayRemove(currentUser.uid), [`memberNames.${currentUser.uid}`]: deleteField() });
+      await updateDoc(doc(db, "groups", g.id), { memberIds: arrayRemove(currentUser.uid), [`memberNames.${currentUser.uid}`]: deleteField() });
       closeModal("renameModal");
-      showToast("Chat Club", owner ? `Deleted "${g.name}".` : `You left "${g.name}".`);
+      showToast("Chat Club", `You left "${g.name}".`);
     } catch(err){
       leavingGroupId = null;
-      msgEl.textContent = owner ? "Couldn't delete the chat. Please try again." : "Couldn't leave the chat. Please try again.";
+      msgEl.textContent = "Couldn't leave the chat. Please try again.";
       msgEl.classList.add("show");
     }
   });

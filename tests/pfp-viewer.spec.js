@@ -37,5 +37,10 @@ test("profile pictures show for friends, and tapping a photo opens it full scree
   await expect(b.locator("#imageViewer")).toHaveClass(/show/);
   await b.locator("#imageViewer").click();
   await expect(b.locator("#imageViewer")).not.toHaveClass(/show/);
+  // and so does tapping someone's profile picture
+  await row.locator(".msg-pfp").click();
+  await expect(b.locator("#imageViewer")).toHaveClass(/show/);
+  await expect(b.locator("#imageViewerImg")).toHaveAttribute("src", /^data:image/);
+  await b.locator("#imageViewer").click();
   await ctxA.close(); await ctxB.close();
 });
