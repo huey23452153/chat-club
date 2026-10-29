@@ -1719,7 +1719,7 @@
     sendPasswordResetEmail, verifyBeforeUpdateEmail, signInWithCustomToken
   } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-auth.js";
   import {
-    getFirestore, doc, setDoc, getDoc, getDocFromServer, getDocs, getDocsFromCache, collection, addDoc, updateDoc, deleteDoc,
+    getFirestore, doc, setDoc, getDoc, getDocFromServer, getDocFromCache, getDocs, getDocsFromCache, collection, addDoc, updateDoc, deleteDoc,
     query, where, orderBy, limitToLast, endBefore, onSnapshot, serverTimestamp, arrayUnion, arrayRemove, deleteField, increment,
     connectFirestoreEmulator, initializeFirestore, persistentLocalCache, persistentMultipleTabManager
   } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
@@ -2374,12 +2374,13 @@
         signingUpName = name;
         const cred = await createUserWithEmailAndPassword(auth, authEmail, password);
         await updateProfile(cred.user, { displayName: name });
-        await setDoc(doc(db, "users", cred.user.uid), {
+        // (saved in the background if Firebase is slow: it gets there once Firebase is back)
+        await Promise.race([setDoc(doc(db, "users", cred.user.uid), {
           displayName: name,
           nameLower: name.trim().toLowerCase(),
           color: AVATAR_COLORS[0],
           createdAt: serverTimestamp()
-        });
+        }), new Promise((ok) => setTimeout(ok, 5000))]);
       } else {
         // an account that has added an email logs in with that; this device may know it
         const remembered = typedEmail ? "" : rememberedLoginEmail(name);
@@ -2543,6 +2544,12 @@
   // new account's name, so remember it here rather than falling back to the
   // internal "name@chatclub.local" login email.
   let signingUpName = null;
+  // Reading one thing, but never waiting long: when Firebase has run out for the day it doesn't say so, it just
+  // keeps trying, and logging in would hang on it. After 4 seconds: whatever this device has saved, or null.
+  async function quickGet(ref){
+    try{ return await Promise.race([getDoc(ref), new Promise((_, no) => setTimeout(() => no(new Error("timeout")), 4000))]); }
+    catch(e){ try{ return await getDocFromCache(ref); } catch(err){ return null; } }
+  }
   onAuthStateChanged(auth, async (user) => {
     if(user){
       if(user.displayName) rememberLoginEmail(user.displayName, user.email);
@@ -2550,8 +2557,8 @@
       if(!displayName){
         // (if the database can't answer, e.g. the free limit ran out, sign in anyway)
         try{
-          const snap = await getDoc(doc(db, "users", user.uid));
-          displayName = snap.exists() ? snap.data().displayName : null;
+          const snap = await quickGet(doc(db, "users", user.uid));
+          displayName = snap && snap.exists() ? snap.data().displayName : null;
         } catch(e){ displayName = null; }
         displayName = displayName || (user.email || "Friend").split("@")[0];
       }
@@ -2561,8 +2568,9 @@
       // (e.g. it got created before Firestore rules were set up),
       // quietly create it now so "Add a friend" search can find them.
       try{
-        const existing = await getDoc(doc(db, "users", user.uid));
-        if(!existing.exists()){
+        const existing = await quickGet(doc(db, "users", user.uid));
+        if(!existing) currentUser.color = AVATAR_COLORS[0]; // (Firebase didn't answer: carry on, sort it out next time)
+        else if(!existing.exists()){
           await setDoc(doc(db, "users", user.uid), {
             displayName: currentUser.displayName,
             nameLower: currentUser.displayName.trim().toLowerCase(),
@@ -2875,7 +2883,7 @@
   //  chat on the relay server: your chat list comes from the copy remembered on
   //  this device, and messages go through the relay (kept there ~12 hours).
   // =========================================================================
-  const BACKUP_WS = "wss://dust-crawler-relay.onrender.com/chat";
+  const BACKUP_WS = (/^(localhost|127\.0\.0\.1)$/.test(location.hostname) && localStorage.getItem("chatclub_backup_ws")) || "wss://dust-crawler-relay.onrender.com/chat"; // (tests can point it at a local relay)
   let backupMode = false, backupSocket = null, backupRetry = 0;
   const backupMsgs = new Map(); // groupId -> [relay messages]
   const isQuotaError = (e) => !!e && (e.code === "resource-exhausted" || /quota|resource.exhausted/i.test(e.message || ""));
@@ -2914,7 +2922,8 @@
   function backupToMessage(b){
     const t = { toDate: () => new Date(b.at), toMillis: () => b.at };
     // (the backup only keeps the newest few photos in each chat)
-    return { id: b.id, text: b.text || (b.photoGone ? "📷 (photo no longer kept)" : ""), gifUrl: b.gifUrl, imageData: b.imageData, senderId: b.senderId, senderName: b.senderName, createdAt: t };
+    return { id: b.id, text: b.text || (b.photoGone ? "📷 (photo no longer kept)" : ""), gifUrl: b.gifUrl, imageData: b.imageData, senderId: b.senderId, senderName: b.senderName, createdAt: t,
+      reactions: b.reactions || {}, ...(b.edited ? { editedAt: b.edited } : {}) };
   }
   function showBackupChat(groupId){
     if(groupId !== activeGroupId) return;
@@ -2931,6 +2940,7 @@
     ws.onmessage = (e) => {
       let m; try{ m = JSON.parse(e.data); } catch(err){ return; }
       if(m.t === "history"){ backupMsgs.set(m.groupId, m.msgs || []); showBackupChat(m.groupId); }
+      else if(m.t === "upd" && m.msg){ backupMsgs.set(m.msg.groupId, (backupMsgs.get(m.msg.groupId) || []).map(x => x.id === m.msg.id ? m.msg : x)); showBackupChat(m.msg.groupId); }
       else if(m.t === "del"){ backupMsgs.set(m.groupId, (backupMsgs.get(m.groupId) || []).filter(x => x.id !== m.id)); showBackupChat(m.groupId); }
       else if(m.t === "msg" && m.msg){
         const list = backupMsgs.get(m.msg.groupId) || []; list.push(m.msg); backupMsgs.set(m.msg.groupId, list);
@@ -3664,6 +3674,7 @@
   }
 
   function toggleReaction(messageId, emoji){
+    if(backupMode){ if(backupSocket && backupSocket.readyState === 1) backupSocket.send(JSON.stringify({ t: "react", groupId: activeGroupId, id: messageId, emoji })); return; }
     const msg = lastRenderedMessages.find(m => m.id === messageId);
     const alreadyReacted = !!(msg && msg.reactions && msg.reactions[emoji] && msg.reactions[emoji].includes(currentUser.uid));
     const ref = doc(db, "groups", activeGroupId, "messages", messageId);
@@ -3714,7 +3725,12 @@
       renderMessages(lastRenderedMessages);
     }
 
-    if(btn.dataset.action === "save" && backupMode){ editingMessageId = null; showToast("Chat Club", "Editing doesn't work on the backup chat. You can delete it and send it again."); renderMessages(lastRenderedMessages); return; }
+    if(btn.dataset.action === "save" && backupMode){
+      const ta = document.getElementById(`editTextarea-${id}`), newText = ta ? ta.value.trim() : "";
+      editingMessageId = null;
+      if(newText && backupSocket && backupSocket.readyState === 1) backupSocket.send(JSON.stringify({ t: "edit", groupId: activeGroupId, id, text: applyWordSwaps(newText.slice(0, 500)) }));
+      renderMessages(lastRenderedMessages); return;
+    }
     if(btn.dataset.action === "save"){
       const ta = document.getElementById(`editTextarea-${id}`);
       const newText = ta ? ta.value.trim() : "";

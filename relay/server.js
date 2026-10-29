@@ -138,6 +138,19 @@ function chatConnection(ws, q) {
       if (c.msgs[i].senderId !== uid && !(await adminFromToken(m.token))) return;
       c.msgs.splice(i, 1);
       const out = JSON.stringify({ t: 'del', groupId: m.groupId, id: m.id }); for (const sub of c.subs) if (sub.readyState === 1) sub.send(out);
+    } else if ((m.t === 'react' || m.t === 'edit') && ws.groups.has(m.groupId) && typeof m.id === 'string') {
+      // a reaction (on or off again), or changing your own message's words
+      const c = chatOf(m.groupId), msg = c.msgs.find((x) => x.id === m.id); if (!msg) return;
+      if (m.t === 'react') {
+        if (typeof m.emoji !== 'string' || !m.emoji || m.emoji.length > 16 || /^(__proto__|constructor|prototype)$/.test(m.emoji)) return;
+        const r = msg.reactions || (msg.reactions = {}); if (!r[m.emoji] && Object.keys(r).length >= 20) return;
+        const who = r[m.emoji] || []; r[m.emoji] = who.includes(uid) ? who.filter((x) => x !== uid) : who.concat(uid);
+        if (!r[m.emoji].length) delete r[m.emoji];
+      } else {
+        if (msg.senderId !== uid || typeof m.text !== 'string' || !m.text.trim()) return;
+        msg.text = m.text.slice(0, 500); msg.edited = Date.now();
+      }
+      const out = JSON.stringify({ t: 'upd', msg }); for (const sub of c.subs) if (sub.readyState === 1) sub.send(out);
     } else if (m.t === 'msg' && ws.groups.has(m.groupId)) {
       const text = typeof m.text === 'string' ? m.text.slice(0, 500) : '', gifUrl = okGif(m.gifUrl) ? m.gifUrl : undefined;
       const imageData = typeof m.imageData === 'string' && m.imageData.length <= MAX_PHOTO && /^data:image\/(jpeg|png|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(m.imageData) ? m.imageData : undefined;
