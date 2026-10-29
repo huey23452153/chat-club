@@ -3455,7 +3455,7 @@
     $("chatTitle").textContent = g.name;
     const online = onlineOthersCount(g);
     $("chatMemberCount").textContent = `${(g.memberIds||[]).length} people` + (online ? ` · ${online} online` : "");
-    $("deleteChatBtn").style.display = (g.ownerId === currentUser.uid) ? "inline-flex" : "none";
+    $("deleteChatBtn").style.display = (g.ownerId === currentUser.uid || isAdmin()) ? "inline-flex" : "none"; // (huey can delete any chat)
     // Any group can start a call now — the MAX_CALL_PARTICIPANTS cap on who
     // can actually be *in* it at once (mesh calling gets rough past a
     // handful of people) is enforced in joinCall/handleCallDocChange instead.
@@ -3465,21 +3465,35 @@
 
   $("deleteChatBtn").addEventListener("click", async () => {
     const g = myGroups.find(g => g.id === activeGroupId);
-    const name = g ? g.name : "this chat";
-    const sure = confirm(`Delete "${name}" for everyone? This can't be undone.`);
-    if(!sure) return;
+    const name = g ? g.name : "this chat", btn = $("deleteChatBtn");
+    // tap twice to be sure (no pop-up box: they can be blocked in the app, and on Windows they stop the typing box working after)
+    if(!btn.dataset.armed){
+      btn.dataset.armed = "1"; btn.textContent = "Tap again to delete";
+      setTimeout(() => { if(btn.isConnected){ delete btn.dataset.armed; btn.textContent = "🗑️ Delete"; } }, 4000);
+      return;
+    }
+    delete btn.dataset.armed; btn.textContent = "🗑️ Delete";
+    if(backupMode){ showToast("Chat Club", "Deleting a chat needs Firebase, which has run out for today. Try again later."); return; }
+    const groupId = activeGroupId;
     try{
+      leavingGroupId = groupId; // (so it doesn't also say "you were removed")
       stopTyping();
+      if(g && g.ownerId !== currentUser.uid && isAdmin()){
+        // (someone else's chat: the database only lets its owner delete it, so huey's goes through the server)
+        const res = await fetch("/api/delete-group", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ groupId, adminToken: await auth.currentUser.getIdToken() }) });
+        const out = await res.json().catch(() => ({}));
+        if(!res.ok || !out.ok) throw new Error(out.error || "failed");
+      } else await deleteDoc(doc(db, "groups", groupId));
       if(messagesUnsub) messagesUnsub();
       if(typingUnsub) typingUnsub();
-      await deleteDoc(doc(db, "groups", activeGroupId));
       activeGroupId = null;
       $("chatView").style.display = "none";
       $("noChatState").style.display = "flex";
       $("sidebar").classList.remove("hide-mobile");
       $("mainPanel").classList.remove("show-mobile");
     } catch(err){
-      alert("Couldn't delete that chat. Please try again.");
+      showToast("Chat Club", `Couldn't delete "${name}". Please try again.`);
     }
   });
 

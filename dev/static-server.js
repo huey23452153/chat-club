@@ -37,10 +37,15 @@ process.env.FIRESTORE_EMULATOR_HOST = '127.0.0.1:8080';
 process.env.FIREBASE_AUTH_EMULATOR_HOST = '127.0.0.1:9099';
 const reset = require('../api/reset.js');
 const passkey = require('../api/passkey.js');
+const deleteGroup = require('../api/delete-group.js');
 
 http.createServer((req, res) => {
   if (req.url.startsWith('/api/reset')) {
     reset(req, res);
+    return;
+  }
+  if (req.url.startsWith('/api/delete-group')) {
+    deleteGroup(req, res);
     return;
   }
   if (req.url.startsWith('/api/passkey')) {
