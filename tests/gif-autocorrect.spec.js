@@ -24,6 +24,10 @@ test("autocorrect (when switched on) fixes typos as you type", async ({ page }) 
   await box.fill(""); await box.click();
   await page.keyboard.type("plaeyr tahnks roblox lol bruh jeep ");
   await expect(box).toHaveValue("player thanks roblox lol bruh jeep ");
+  // laughing is left alone, however long
+  await box.fill(""); await box.click();
+  await page.keyboard.type("hehe hehehe hahaha lolol ");
+  await expect(box).toHaveValue("hehe hehehe hahaha lolol ");
 });
 
 test("pasting a GIF file attaches it still animated (not turned into a photo)", async ({ page }) => {

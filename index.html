@@ -3974,6 +3974,8 @@
   function bigFix(word){
     const w = word.toLowerCase();
     if(AC_KEEP.has(w)) return null;
+    // laughing, however long: hehe, hehehe, hahaha, hihi, hoho, lolol, lmaooo
+    if(/^(h[aeiou]){2,}h?$/.test(w) || /^(lo)+l$/.test(w) || /^l+o+l+$/.test(w) || /^lmf?a+o+$/.test(w)) return null;
     const known = AUTOCORRECT_WORDS[w] || AC_EXTRA[w] || (acBig && acBig[w]);
     if(known) return known;
     if(!acRank || !acDict || w.length < 4 || acRank.has(w)) return null;
