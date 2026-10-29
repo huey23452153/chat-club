@@ -494,9 +494,9 @@
   .gif-grid .gif-msg{ grid-column:1/-1; text-align:center; color:var(--ink-soft); padding:20px 8px; font-size:14px; }
   .gif-credit{ font-size:10px; text-align:right; color:var(--ink-soft); }
   /* tap a photo: it fills the screen; tap anywhere (or Esc) to close */
-  .image-viewer{ position:fixed; inset:0; z-index:400; background:rgba(0,0,0,.88); display:none; align-items:center; justify-content:center; padding:16px; cursor:zoom-out; }
+  .image-viewer{ position:fixed; inset:0; z-index:400; background:#000; display:none; align-items:center; justify-content:center; cursor:zoom-out; }
   .image-viewer.show{ display:flex; }
-  .image-viewer img{ max-width:100%; max-height:100%; object-fit:contain; border-radius:8px; }
+  .image-viewer img{ width:100%; height:100%; object-fit:contain; }
   .image-viewer button{ position:absolute; top:12px; right:12px; background:rgba(255,255,255,.15); color:#fff; border:none; width:40px; height:40px; border-radius:50%; font-size:18px; cursor:pointer; }
   /* profile pictures */
   .avatar.has-photo{ background-size:cover !important; background-position:center !important; color:transparent; }
@@ -2722,7 +2722,7 @@
   // Keep one listener per person I share a group with (and drop the rest).
   // profile pictures: a small square JPEG (stored on the user's own document)
   const photos = new Map(); // uid -> data URL
-  const isValidPfp = (p) => typeof p === "string" && p.length < 60000 && /^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(p);
+  const isValidPfp = (p) => typeof p === "string" && p.length < 200000 && /^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(p);
   function showMyPhoto(photo){
     const ok = isValidPfp(photo);
     for(const el of [$("meAvatar"), $("pfpPreview")]){
@@ -2736,10 +2736,10 @@
       const img = new Image(), url = URL.createObjectURL(file);
       img.onload = () => {
         URL.revokeObjectURL(url);
-        const size = 128, side = Math.min(img.width, img.height), c = document.createElement("canvas");
+        const size = 480, side = Math.min(img.width, img.height), c = document.createElement("canvas");
         c.width = c.height = size;
         c.getContext("2d").drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, size, size);
-        resolve(c.toDataURL("image/jpeg", 0.75));
+        resolve(c.toDataURL("image/jpeg", 0.8));
       };
       img.onerror = () => reject(new Error("Couldn't read that picture"));
       img.src = url;
@@ -2761,8 +2761,18 @@
   });
 
   // tap a photo in a chat to see it full screen
-  function openImageViewer(src){ $("imageViewerImg").src = src; $("imageViewer").classList.add("show"); }
-  function closeImageViewer(){ $("imageViewer").classList.remove("show"); $("imageViewerImg").removeAttribute("src"); }
+  // (the whole screen, not just the window: real full screen where the browser allows it)
+  function openImageViewer(src){
+    $("imageViewerImg").src = src; $("imageViewer").classList.add("show");
+    const v = $("imageViewer"), go = v.requestFullscreen || v.webkitRequestFullscreen;
+    if(go) try{ const p = go.call(v); if(p && p.catch) p.catch(() => {}); } catch(e){}
+  }
+  function closeImageViewer(){
+    $("imageViewer").classList.remove("show"); $("imageViewerImg").removeAttribute("src");
+    if(document.fullscreenElement === $("imageViewer")) document.exitFullscreen().catch(() => {});
+  }
+  // (leaving full screen with the phone's back gesture / Esc closes the picture too)
+  document.addEventListener("fullscreenchange", () => { if(!document.fullscreenElement && $("imageViewer").classList.contains("show")) closeImageViewer(); });
   $("imageViewer").addEventListener("click", closeImageViewer);
   document.addEventListener("keydown", (e) => { if(e.key === "Escape" && $("imageViewer").classList.contains("show")) closeImageViewer(); });
   document.addEventListener("click", (e) => {
