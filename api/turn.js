@@ -17,7 +17,9 @@ module.exports = async (req, res) => {
   };
   // Metered's free plan, with the username and password of one credential from its dashboard
   // (TURN Server → Credentials): TURN_USERNAME and TURN_PASSWORD
-  const user = process.env.TURN_USERNAME, pass = process.env.TURN_PASSWORD;
+  let user = process.env.TURN_USERNAME, pass = process.env.TURN_PASSWORD;
+  // (or saved in Vercel as one variable named after the username, holding the password)
+  if (!user) { const k = Object.keys(process.env).find((n) => /^[0-9a-f]{24}$/.test(n)); if (k) { user = k; pass = process.env[k]; } }
   if (user && pass) {
     const urls = ['turn:global.relay.metered.ca:80', 'turn:global.relay.metered.ca:80?transport=tcp', 'turn:global.relay.metered.ca:443', 'turns:global.relay.metered.ca:443?transport=tcp'];
     return send({ iceServers: STUN.concat(urls.map((u) => ({ urls: u, username: user, credential: pass }))), turn: true });
