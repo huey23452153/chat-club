@@ -2547,7 +2547,7 @@
   // Signing up fires onAuthStateChanged before updateProfile has set the
   // new account's name, so remember it here rather than falling back to the
   // internal "name@chatclub.local" login email.
-  let signingUpName = null;
+  let signingUpName = null, myProfileSnap = null;
   // Reading one thing, but never waiting long: when Firebase has run out for the day it doesn't say so, it just
   // keeps trying, and logging in would hang on it. After 4 seconds: whatever this device has saved, or null.
   async function quickGet(ref){
@@ -2572,7 +2572,7 @@
       // (e.g. it got created before Firestore rules were set up),
       // quietly create it now so "Add a friend" search can find them.
       try{
-        const existing = await quickGet(doc(db, "users", user.uid));
+        const existing = myProfileSnap = await quickGet(doc(db, "users", user.uid));
         if(!existing) currentUser.color = AVATAR_COLORS[0]; // (Firebase didn't answer: carry on, sort it out next time)
         else if(!existing.exists()){
           await setDoc(doc(db, "users", user.uid), {
@@ -2590,7 +2590,7 @@
       applyMyColor(currentUser.color);
       $("meName").textContent = currentUser.displayName;
       $("meAvatar").textContent = initials(currentUser.displayName);
-      getDoc(doc(db, "users", currentUser.uid)).then((snap) => showMyPhoto(snap.data()?.photo)).catch(() => {});
+      showMyPhoto(myProfileSnap && myProfileSnap.exists() ? myProfileSnap.data().photo : null); // (read just above: no need to again)
       passwordInput.value = ""; nameInput.value = "";
       showScreen("app");
       listenToMyGroups();
@@ -2941,7 +2941,8 @@
     else if(out === false && backupMode && !new URLSearchParams(location.search).has("backup")
       && !activeCallGroupId && !messageInput.value.trim()) location.reload();
   }
-  setInterval(checkFirebase, 5 * 60000); // (each check can count as one read, so not too often)
+  // (each check can count as one read, so not too often, and not at all while nobody's looking at the app)
+  setInterval(() => { if(document.visibilityState === "visible") checkFirebase(); }, 10 * 60000);
   $("backupBanner").addEventListener("click", () => $("backupBanner").classList.toggle("small"));
   function backupToMessage(b){
     const t = { toDate: () => new Date(b.at), toMillis: () => b.at };
@@ -4480,6 +4481,18 @@
       ws.send(JSON.stringify({ ...msg, rid }));
     });
   }
+  // A connection finds its ways through in a quick burst of several "candidates"; one write each meant everyone in the
+  // chat reading the call document again for every one. So gather the ones from the next 400 ms into one write.
+  const candidateQueue = new Map(); // "groupId|field" -> [candidates]
+  function sendCandidate(groupId, field, cand){
+    const k = groupId + "|" + field;
+    if(candidateQueue.has(k)){ candidateQueue.get(k).push(cand); return; }
+    candidateQueue.set(k, [cand]);
+    setTimeout(() => {
+      const list = candidateQueue.get(k); candidateQueue.delete(k);
+      callUpdate(groupId, { [field]: backupMode ? { $: "union", v: list } : arrayUnion(...list) }).catch(() => {});
+    }, 400);
+  }
   async function callGet(groupId){ return backupMode ? callSnap((await callAsk({ t: "get", g: groupId })).data) : getDoc(callDocRef(groupId)); }
   async function callSet(groupId, data){ if(backupMode) await callAsk({ t: "set", g: groupId, data }); else await setDoc(callDocRef(groupId), data); }
   async function callUpdate(groupId, update){ if(backupMode) await callAsk({ t: "upd", g: groupId, data: update }); else await updateDoc(callDocRef(groupId), update); }
@@ -5147,13 +5160,7 @@
     // Must exist before createOffer() so the offer includes a data section.
     setupControlChannel(otherUid, pc.createDataChannel("control"));
     const key = `${currentUser.uid}_${otherUid}`;
-    pc.onicecandidate = (e) => {
-      if(e.candidate){
-        callUpdate(groupId, {
-          [`peers.${key}.offererCandidates`]: cf.union(e.candidate.toJSON())
-        }).catch(()=>{});
-      }
-    };
+    pc.onicecandidate = (e) => { if(e.candidate) sendCandidate(groupId, `peers.${key}.offererCandidates`, e.candidate.toJSON()); };
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
     await callUpdate(groupId, {
@@ -5172,13 +5179,7 @@
     watchIceConnectionState(pc, otherUid);
     pc.ondatachannel = (e) => { if(e.channel.label === "control") setupControlChannel(otherUid, e.channel); };
     const key = `${otherUid}_${currentUser.uid}`;
-    pc.onicecandidate = (e) => {
-      if(e.candidate){
-        callUpdate(groupId, {
-          [`peers.${key}.answererCandidates`]: cf.union(e.candidate.toJSON())
-        }).catch(()=>{});
-      }
-    };
+    pc.onicecandidate = (e) => { if(e.candidate) sendCandidate(groupId, `peers.${key}.answererCandidates`, e.candidate.toJSON()); };
     await pc.setRemoteDescription(new RTCSessionDescription(peerData.offer));
     // Fill the audio/video slots the offer created (addTrack reuses them).
     // A slot I have nothing for (no mic/camera) still goes two-way, so a
